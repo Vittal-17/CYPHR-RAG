@@ -27,10 +27,10 @@ PROVIDER_REGISTRY = {
         enabled=os.getenv("LLM_GEMINI_ENABLED", "false").lower() == "true",
         api_key_env="GEMINI_API_KEY",
         base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
-        default_model="gemini-1.5-flash",
+        default_model="gemini-2.5-flash",
         models=[
-            ModelDefinition(id="gemini-1.5-flash", name="Gemini 1.5 Flash"),
-            ModelDefinition(id="gemini-1.5-pro", name="Gemini 1.5 Pro"),
+            ModelDefinition(id="gemini-2.5-flash", name="Gemini 2.5 Flash"),
+            ModelDefinition(id="gemini-3.5-flash-lite", name="Gemini 3.5 Flash-Lite"),
         ]
     ),
     "groq": ProviderDefinition(

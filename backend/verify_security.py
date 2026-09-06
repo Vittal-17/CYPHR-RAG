@@ -113,7 +113,7 @@ class TestCYPHRSecurityAndRAG(unittest.IsolatedAsyncioTestCase):
         app.dependency_overrides[get_current_user] = lambda: {"email": "user@test.com"}
         csrf_token = "mock-csrf-token"
         test_cases = [
-            ("gemini", "gemini-1.5-pro"),
+            ("gemini", "gemini-3.5-flash-lite"),
             ("tokenforge", "claude-opus-5"),
             ("groq", "openai/gpt-oss-120b")
         ]
@@ -237,7 +237,7 @@ print("SET_COOKIE:", set_cookie)
 
         mock_client.chat.completions.create = AsyncMock(return_value=mock_llm_response)
 
-        mock_provider.return_value = (mock_client, 'gemini', 'gemini-1.5-flash')
+        mock_provider.return_value = (mock_client, 'gemini', 'gemini-2.5-flash')
 
         # Run test for alpha
         await generate_chat_response("Hello", "user_alpha@test.com")
@@ -268,7 +268,7 @@ print("SET_COOKIE:", set_cookie)
 
         mock_client.chat.completions.create = AsyncMock(return_value=mock_llm_response)
 
-        mock_provider.return_value = (mock_client, 'gemini', 'gemini-1.5-flash')
+        mock_provider.return_value = (mock_client, 'gemini', 'gemini-2.5-flash')
 
         await generate_chat_response("Summarize testnewnewtestnew.pdf please", "user@test.com")
 
@@ -297,7 +297,7 @@ print("SET_COOKIE:", set_cookie)
 
         mock_client.chat.completions.create = AsyncMock(return_value=mock_llm_response)
 
-        mock_provider.return_value = (mock_client, 'gemini', 'gemini-1.5-flash')
+        mock_provider.return_value = (mock_client, 'gemini', 'gemini-2.5-flash')
 
         answer = await generate_chat_response("query", "user@test.com")
 
@@ -325,7 +325,7 @@ print("SET_COOKIE:", set_cookie)
 
         mock_client.chat.completions.create = AsyncMock(return_value=mock_llm_response)
 
-        mock_provider.return_value = (mock_client, 'gemini', 'gemini-1.5-flash')
+        mock_provider.return_value = (mock_client, 'gemini', 'gemini-2.5-flash')
 
         answer = await generate_chat_response("query", "user@test.com")
 
@@ -1042,7 +1042,7 @@ print(ACCESS_TOKEN_EXPIRE_MINUTES * 60)
 
         mock_client.chat.completions.create = AsyncMock(return_value=mock_provider_response)
 
-        mock_provider.return_value = (mock_client, 'gemini', 'gemini-1.5-flash')
+        mock_provider.return_value = (mock_client, 'gemini', 'gemini-2.5-flash')
         with patch("services.collection.distinct", new_callable=AsyncMock, return_value=["test.pdf"]), \
              patch("services.collection.aggregate") as mock_aggregate:
             mock_cursor = AsyncMock()
@@ -1253,7 +1253,7 @@ class TestCYPHRPatch8A(unittest.IsolatedAsyncioTestCase):
 
             mock_client.chat.completions.create = AsyncMock(return_value=mock_provider_response)
 
-            mock_provider.return_value = (mock_client, 'gemini', 'gemini-1.5-flash')
+            mock_provider.return_value = (mock_client, 'gemini', 'gemini-2.5-flash')
 
             mock_cursor = AsyncMock()
             mock_cursor.to_list = AsyncMock(return_value=[{"filename": "test.pdf", "page": 1, "text": "async data"}])
@@ -2326,15 +2326,15 @@ class TestRuntimeRouting(unittest.IsolatedAsyncioTestCase):
         mock_agg.return_value.to_list = AsyncMock(return_value=[{"filename": "test.pdf", "page": 1, "text": "hello"}])
         mock_distinct.return_value = ["test.pdf"]; mock_distinct.side_effect = AsyncMock(return_value=["test.pdf"])
 
-        with patch.dict(os.environ, {"LLM_GOROUTER_ENABLED": "true", "GOROUTER_API_KEY": "fake"}, clear=False):
+        with patch.dict(os.environ, {"LLM_GEMINI_ENABLED": "true", "GEMINI_API_KEY": "fake"}, clear=False):
             import llm_providers
             llm_providers.PROVIDER_REGISTRY["gemini"].enabled = True
-            res = await generate_chat_response("query", "user@test.com", "gemini", "gemini-1.5-flash")
+            res = await generate_chat_response("query", "user@test.com", "gemini", "gemini-2.5-flash")
 
             mock_openai_cls.assert_called_with(api_key="fake", base_url="https://generativelanguage.googleapis.com/v1beta/openai/")
             mock_instance.chat.completions.create.assert_called_once()
             _, kwargs = mock_instance.chat.completions.create.call_args
-            self.assertEqual(kwargs["model"], "gemini-1.5-flash")
+            self.assertEqual(kwargs["model"], "gemini-2.5-flash")
 
     @patch("services.get_embedding_provider")
     @patch("services.collection.distinct")
@@ -2443,17 +2443,17 @@ class TestProviderRegistry(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(data["default_provider"], "groq")
         self.assertEqual(data["default_model"], "openai/gpt-oss-20b")
 
-    @patch.dict(os.environ, {"GROQ_API_KEY": "fake", "GOROUTER_API_KEY": "fake", "JINA_API_KEY": "fake", "LLM_GOROUTER_ENABLED": "true"})
+    @patch.dict(os.environ, {"GROQ_API_KEY": "fake", "GEMINI_API_KEY": "fake", "JINA_API_KEY": "fake", "LLM_GEMINI_ENABLED": "true"})
     def test_gemini_selects_gemini_client(self):
         import llm_providers
         llm_providers._client_cache.clear()
         llm_providers.PROVIDER_REGISTRY["gemini"].enabled = True
-        client, p_id, m_id = llm_providers.get_provider_client("gemini", "gemini-1.5-flash")
+        client, p_id, m_id = llm_providers.get_provider_client("gemini", "gemini-2.5-flash")
         self.assertEqual(p_id, "gemini")
-        self.assertEqual(m_id, "gemini-1.5-flash")
-        self.assertIn("gemini.app", client.base_url.host)
+        self.assertEqual(m_id, "gemini-2.5-flash")
+        self.assertIn("generativelanguage.googleapis.com", client.base_url.host)
 
-    @patch.dict(os.environ, {"GROQ_API_KEY": "fake", "GOROUTER_API_KEY": "fake", "JINA_API_KEY": "fake"})
+    @patch.dict(os.environ, {"GROQ_API_KEY": "fake", "GEMINI_API_KEY": "fake", "JINA_API_KEY": "fake"})
     def test_groq_20b_selects_groq_client(self):
         import importlib
         import llm_providers
@@ -2463,7 +2463,7 @@ class TestProviderRegistry(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(m_id, "openai/gpt-oss-20b")
         self.assertIn("api.groq.com", client.base_url.host)
 
-    @patch.dict(os.environ, {"GROQ_API_KEY": "fake", "GOROUTER_API_KEY": "fake", "JINA_API_KEY": "fake"})
+    @patch.dict(os.environ, {"GROQ_API_KEY": "fake", "GEMINI_API_KEY": "fake", "JINA_API_KEY": "fake"})
     def test_omitted_provider_uses_defaults(self):
         import importlib
         import llm_providers
@@ -2476,7 +2476,7 @@ class TestProviderRegistry(unittest.IsolatedAsyncioTestCase):
     def test_cross_provider_model_rejected(self):
         from llm_providers import get_provider_client
         with self.assertRaisesRegex(ValueError, "is not supported"):
-            get_provider_client("groq", "gemini-1.5-flash")
+            get_provider_client("groq", "gemini-2.5-flash")
 
     @patch.dict(os.environ, {"LLM_TOKENFORGE_ENABLED": "false"})
     def test_disabled_provider_rejected_even_if_requested(self):
@@ -2484,7 +2484,7 @@ class TestProviderRegistry(unittest.IsolatedAsyncioTestCase):
         import llm_providers
         importlib.reload(llm_providers)
         with self.assertRaisesRegex(ValueError, "is currently disabled"):
-            llm_providers.get_provider_client("tokenforge", "gemini-1.5-flash")
+            llm_providers.get_provider_client("tokenforge", "claude-opus-5")
 
     @patch("main.chats_collection.find_one", new_callable=AsyncMock)
     @patch("main.chats_collection.find", new_callable=MagicMock)
