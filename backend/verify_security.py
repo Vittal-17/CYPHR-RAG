@@ -63,7 +63,7 @@ class TestCYPHRSecurityAndRAG(unittest.IsolatedAsyncioTestCase):
         with temporary_cookies(client, {"csrf_token": csrf_token}):
             response = client.post(
                 "/chat",
-                json={"message": "Test message", "chat_id": "fake-123", "provider": "tokenforge", "model": "claude-fable-5"},
+                json={"message": "Test message", "chat_id": "fake-123", "provider": "tokenforge", "model": "claude-opus-5"},
                 headers={"X-CSRF-Token": csrf_token}
             )
 
@@ -113,8 +113,8 @@ class TestCYPHRSecurityAndRAG(unittest.IsolatedAsyncioTestCase):
         app.dependency_overrides[get_current_user] = lambda: {"email": "user@test.com"}
         csrf_token = "mock-csrf-token"
         test_cases = [
-            ("tokenforge", "glm-5.3"),
-            ("tokenforge", "claude-fable-5"),
+            ("gemini", "gemini-1.5-pro"),
+            ("tokenforge", "claude-opus-5"),
             ("groq", "openai/gpt-oss-120b")
         ]
         for prov, mod in test_cases:
@@ -223,7 +223,7 @@ print("SET_COOKIE:", set_cookie)
     @patch("services.collection")
     @patch("embeddings.JinaEmbeddingProvider.embed_query", new_callable=AsyncMock)
     @patch("services.get_provider_client")
-    async def test_1_multi_tenant_isolation(self, mock_gorouter, mock_embed, mock_collection):
+    async def test_1_multi_tenant_isolation(self, mock_provider, mock_embed, mock_collection):
         """[1] Multi-Tenant Isolation Verification Test"""
         mock_embed.return_value = [[0.1]*768] if "documents" in str(mock_embed) else [0.1]*768
         mock_collection.distinct = AsyncMock(return_value=[])
@@ -237,7 +237,7 @@ print("SET_COOKIE:", set_cookie)
 
         mock_client.chat.completions.create = AsyncMock(return_value=mock_llm_response)
 
-        mock_gorouter.return_value = (mock_client, 'gorouter', 'claude-opus-5')
+        mock_provider.return_value = (mock_client, 'gemini', 'gemini-1.5-flash')
 
         # Run test for alpha
         await generate_chat_response("Hello", "user_alpha@test.com")
@@ -254,7 +254,7 @@ print("SET_COOKIE:", set_cookie)
     @patch("services.collection")
     @patch("embeddings.JinaEmbeddingProvider.embed_query", new_callable=AsyncMock)
     @patch("services.get_provider_client")
-    async def test_2_filename_aware_scoping(self, mock_gorouter, mock_embed, mock_collection):
+    async def test_2_filename_aware_scoping(self, mock_provider, mock_embed, mock_collection):
         """[2] Filename-Aware Scoping Verification Test"""
         mock_embed.return_value = [[0.1]*768] if "documents" in str(mock_embed) else [0.1]*768
         mock_collection.distinct = AsyncMock(return_value=["testnewnewtestnew.pdf", "otherfile.pdf"])
@@ -268,7 +268,7 @@ print("SET_COOKIE:", set_cookie)
 
         mock_client.chat.completions.create = AsyncMock(return_value=mock_llm_response)
 
-        mock_gorouter.return_value = (mock_client, 'gorouter', 'claude-opus-5')
+        mock_provider.return_value = (mock_client, 'gemini', 'gemini-1.5-flash')
 
         await generate_chat_response("Summarize testnewnewtestnew.pdf please", "user@test.com")
 
@@ -281,7 +281,7 @@ print("SET_COOKIE:", set_cookie)
     @patch("services.collection")
     @patch("embeddings.JinaEmbeddingProvider.embed_query", new_callable=AsyncMock)
     @patch("services.get_provider_client")
-    async def test_3_metadata_page_fallback(self, mock_gorouter, mock_embed, mock_collection):
+    async def test_3_metadata_page_fallback(self, mock_provider, mock_embed, mock_collection):
         """[3] Metadata Page Integrity & Fallback Test"""
         mock_embed.return_value = [[0.1]*768] if "documents" in str(mock_embed) else [0.1]*768
         mock_collection.distinct = AsyncMock(return_value=["doc.pdf"])
@@ -297,7 +297,7 @@ print("SET_COOKIE:", set_cookie)
 
         mock_client.chat.completions.create = AsyncMock(return_value=mock_llm_response)
 
-        mock_gorouter.return_value = (mock_client, 'gorouter', 'claude-opus-5')
+        mock_provider.return_value = (mock_client, 'gemini', 'gemini-1.5-flash')
 
         answer = await generate_chat_response("query", "user@test.com")
 
@@ -307,7 +307,7 @@ print("SET_COOKIE:", set_cookie)
     @patch("services.collection")
     @patch("embeddings.JinaEmbeddingProvider.embed_query", new_callable=AsyncMock)
     @patch("services.get_provider_client")
-    async def test_4_precision_citation_filtering(self, mock_gorouter, mock_embed, mock_collection):
+    async def test_4_precision_citation_filtering(self, mock_provider, mock_embed, mock_collection):
         """[4] Post-LLM Precision Citation Filtering Test"""
         mock_embed.return_value = [[0.1]*768] if "documents" in str(mock_embed) else [0.1]*768
         mock_collection.distinct = AsyncMock(return_value=["file1.pdf", "file2.pdf", "file3.pdf"])
@@ -325,7 +325,7 @@ print("SET_COOKIE:", set_cookie)
 
         mock_client.chat.completions.create = AsyncMock(return_value=mock_llm_response)
 
-        mock_gorouter.return_value = (mock_client, 'gorouter', 'claude-opus-5')
+        mock_provider.return_value = (mock_client, 'gemini', 'gemini-1.5-flash')
 
         answer = await generate_chat_response("query", "user@test.com")
 
@@ -1032,17 +1032,17 @@ print(ACCESS_TOKEN_EXPIRE_MINUTES * 60)
 
     @patch("embeddings.JinaEmbeddingProvider.embed_query", new_callable=AsyncMock)
     @patch("services.get_provider_client")
-    async def test_40_patch_7b_async_embedding_used(self, mock_gorouter, mock_embed):
+    async def test_40_patch_7b_async_embedding_used(self, mock_provider, mock_embed):
         """PATCH 7B: Verify async embedding and chat completion APIs are used"""
         from services import generate_chat_response, generate_auto_title
         mock_embed.return_value = [0.9]*768
-        mock_gorouter_response = MagicMock()
-        mock_gorouter_response.choices = [MagicMock(message=MagicMock(content="Async response"))]
+        mock_provider_response = MagicMock()
+        mock_provider_response.choices = [MagicMock(message=MagicMock(content="Async response"))]
         mock_client = MagicMock()
 
-        mock_client.chat.completions.create = AsyncMock(return_value=mock_gorouter_response)
+        mock_client.chat.completions.create = AsyncMock(return_value=mock_provider_response)
 
-        mock_gorouter.return_value = (mock_client, 'gorouter', 'claude-opus-5')
+        mock_provider.return_value = (mock_client, 'gemini', 'gemini-1.5-flash')
         with patch("services.collection.distinct", new_callable=AsyncMock, return_value=["test.pdf"]), \
              patch("services.collection.aggregate") as mock_aggregate:
             mock_cursor = AsyncMock()
@@ -1051,7 +1051,7 @@ print(ACCESS_TOKEN_EXPIRE_MINUTES * 60)
             result = await generate_chat_response("test query", "user@test.com")
 
             mock_embed.assert_called_once()
-            mock_gorouter.assert_called_once()
+            mock_provider.assert_called_once()
             self.assertIn("Async response", result)
 
     @patch("embeddings.JinaEmbeddingProvider.embed_documents", new_callable=AsyncMock)
@@ -1225,7 +1225,7 @@ class TestCYPHRPatch8A(unittest.IsolatedAsyncioTestCase):
              patch("services.collection.insert_many", new_callable=AsyncMock) as mock_insert, \
              patch("services.collection.distinct", new_callable=AsyncMock, return_value=["test.pdf"]), \
              patch("services.collection.aggregate") as mock_aggregate, \
-             patch("services.get_provider_client") as mock_gorouter:
+             patch("services.get_provider_client") as mock_provider:
 
             # K & M
             mock_extract.return_value = [{"page": 1, "text": "Doc content"}]
@@ -1247,13 +1247,13 @@ class TestCYPHRPatch8A(unittest.IsolatedAsyncioTestCase):
 
             # L
             mock_embed_query.return_value = [0.8]*768
-            mock_gorouter_response = MagicMock()
-            mock_gorouter_response.choices = [MagicMock(message=MagicMock(content="Answer"))]
+            mock_provider_response = MagicMock()
+            mock_provider_response.choices = [MagicMock(message=MagicMock(content="Answer"))]
             mock_client = MagicMock()
 
-            mock_client.chat.completions.create = AsyncMock(return_value=mock_gorouter_response)
+            mock_client.chat.completions.create = AsyncMock(return_value=mock_provider_response)
 
-            mock_gorouter.return_value = (mock_client, 'gorouter', 'claude-opus-5')
+            mock_provider.return_value = (mock_client, 'gemini', 'gemini-1.5-flash')
 
             mock_cursor = AsyncMock()
             mock_cursor.to_list = AsyncMock(return_value=[{"filename": "test.pdf", "page": 1, "text": "async data"}])
@@ -2311,7 +2311,7 @@ class TestRuntimeRouting(unittest.IsolatedAsyncioTestCase):
     @patch("services.collection.distinct")
     @patch("services.collection.aggregate")
     @patch("llm_providers.AsyncOpenAI")
-    async def test_runtime_routing_gorouter(self, mock_openai_cls, mock_agg, mock_distinct, mock_jina):
+    async def test_runtime_routing_gemini(self, mock_openai_cls, mock_agg, mock_distinct, mock_jina):
         mock_jina.return_value.embed_query = AsyncMock(return_value=[0.1]*768)
         import llm_providers
         llm_providers._client_cache.clear()
@@ -2328,13 +2328,13 @@ class TestRuntimeRouting(unittest.IsolatedAsyncioTestCase):
 
         with patch.dict(os.environ, {"LLM_GOROUTER_ENABLED": "true", "GOROUTER_API_KEY": "fake"}, clear=False):
             import llm_providers
-            llm_providers.PROVIDER_REGISTRY["gorouter"].enabled = True
-            res = await generate_chat_response("query", "user@test.com", "gorouter", "claude-opus-5")
+            llm_providers.PROVIDER_REGISTRY["gemini"].enabled = True
+            res = await generate_chat_response("query", "user@test.com", "gemini", "gemini-1.5-flash")
 
-            mock_openai_cls.assert_called_with(api_key="fake", base_url="https://gorouter.app/v1")
+            mock_openai_cls.assert_called_with(api_key="fake", base_url="https://generativelanguage.googleapis.com/v1beta/openai/")
             mock_instance.chat.completions.create.assert_called_once()
             _, kwargs = mock_instance.chat.completions.create.call_args
-            self.assertEqual(kwargs["model"], "claude-opus-5")
+            self.assertEqual(kwargs["model"], "gemini-1.5-flash")
 
     @patch("services.get_embedding_provider")
     @patch("services.collection.distinct")
@@ -2444,14 +2444,14 @@ class TestProviderRegistry(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(data["default_model"], "openai/gpt-oss-20b")
 
     @patch.dict(os.environ, {"GROQ_API_KEY": "fake", "GOROUTER_API_KEY": "fake", "JINA_API_KEY": "fake", "LLM_GOROUTER_ENABLED": "true"})
-    def test_gorouter_selects_gorouter_client(self):
+    def test_gemini_selects_gemini_client(self):
         import llm_providers
         llm_providers._client_cache.clear()
-        llm_providers.PROVIDER_REGISTRY["gorouter"].enabled = True
-        client, p_id, m_id = llm_providers.get_provider_client("gorouter", "claude-opus-5")
-        self.assertEqual(p_id, "gorouter")
-        self.assertEqual(m_id, "claude-opus-5")
-        self.assertIn("gorouter.app", client.base_url.host)
+        llm_providers.PROVIDER_REGISTRY["gemini"].enabled = True
+        client, p_id, m_id = llm_providers.get_provider_client("gemini", "gemini-1.5-flash")
+        self.assertEqual(p_id, "gemini")
+        self.assertEqual(m_id, "gemini-1.5-flash")
+        self.assertIn("gemini.app", client.base_url.host)
 
     @patch.dict(os.environ, {"GROQ_API_KEY": "fake", "GOROUTER_API_KEY": "fake", "JINA_API_KEY": "fake"})
     def test_groq_20b_selects_groq_client(self):
@@ -2476,7 +2476,7 @@ class TestProviderRegistry(unittest.IsolatedAsyncioTestCase):
     def test_cross_provider_model_rejected(self):
         from llm_providers import get_provider_client
         with self.assertRaisesRegex(ValueError, "is not supported"):
-            get_provider_client("groq", "claude-opus-5")
+            get_provider_client("groq", "gemini-1.5-flash")
 
     @patch.dict(os.environ, {"LLM_TOKENFORGE_ENABLED": "false"})
     def test_disabled_provider_rejected_even_if_requested(self):
@@ -2484,7 +2484,7 @@ class TestProviderRegistry(unittest.IsolatedAsyncioTestCase):
         import llm_providers
         importlib.reload(llm_providers)
         with self.assertRaisesRegex(ValueError, "is currently disabled"):
-            llm_providers.get_provider_client("tokenforge", "claude-opus-5")
+            llm_providers.get_provider_client("tokenforge", "gemini-1.5-flash")
 
     @patch("main.chats_collection.find_one", new_callable=AsyncMock)
     @patch("main.chats_collection.find", new_callable=MagicMock)
@@ -2513,7 +2513,7 @@ class TestProviderRegistry(unittest.IsolatedAsyncioTestCase):
         with temporary_cookies(client, {"csrf_token": csrf_token}):
             response = client.post(
                 "/chat",
-                json={"message": "First message", "chat_id": "fake-123", "provider": "tokenforge", "model": "claude-fable-5"},
+                json={"message": "First message", "chat_id": "fake-123", "provider": "tokenforge", "model": "claude-opus-5"},
                 headers={"X-CSRF-Token": csrf_token}
             )
         self.assertEqual(response.status_code, 200)
@@ -2568,7 +2568,7 @@ class TestProviderRegistry(unittest.IsolatedAsyncioTestCase):
         with temporary_cookies(client, {"csrf_token": csrf_token}):
             response = client.post(
                 "/chat",
-                json={"message": "Subsequent message", "chat_id": "fake-123", "provider": "tokenforge", "model": "claude-fable-5"},
+                json={"message": "Subsequent message", "chat_id": "fake-123", "provider": "tokenforge", "model": "claude-opus-5"},
                 headers={"X-CSRF-Token": csrf_token}
             )
         self.assertEqual(response.status_code, 200)
@@ -2596,7 +2596,7 @@ class TestProviderRegistry(unittest.IsolatedAsyncioTestCase):
         with temporary_cookies(client, {"csrf_token": csrf_token}):
             response = client.post(
                 "/chat",
-                json={"message": "Test message", "chat_id": "fake-123", "provider": "tokenforge", "model": "claude-fable-5"},
+                json={"message": "Test message", "chat_id": "fake-123", "provider": "tokenforge", "model": "claude-opus-5"},
                 headers={"X-CSRF-Token": csrf_token}
             )
 
@@ -2635,7 +2635,7 @@ class TestProviderRegistry(unittest.IsolatedAsyncioTestCase):
         with temporary_cookies(client, {"csrf_token": csrf_token}):
             response = client.post(
                 "/chat",
-                json={"message": "Test message", "chat_id": "fake-123", "provider": "tokenforge", "model": "claude-fable-5"},
+                json={"message": "Test message", "chat_id": "fake-123", "provider": "tokenforge", "model": "claude-opus-5"},
                 headers={"X-CSRF-Token": csrf_token}
             )
 
@@ -2673,7 +2673,7 @@ class TestProviderRegistry(unittest.IsolatedAsyncioTestCase):
         with temporary_cookies(client, {"csrf_token": csrf_token}):
             response = client.post(
                 "/chat",
-                json={"message": "Tell me about printing", "chat_id": "fake-123", "provider": "tokenforge", "model": "claude-fable-5"},
+                json={"message": "Tell me about printing", "chat_id": "fake-123", "provider": "tokenforge", "model": "claude-opus-5"},
                 headers={"X-CSRF-Token": csrf_token}
             )
 

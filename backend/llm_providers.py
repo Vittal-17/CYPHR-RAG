@@ -21,6 +21,18 @@ class ProviderDefinition(BaseModel):
 
 # Note: We read enabled status from env.
 PROVIDER_REGISTRY = {
+        "gemini": ProviderDefinition(
+        id="gemini",
+        name="Gemini",
+        enabled=os.getenv("LLM_GEMINI_ENABLED", "false").lower() == "true",
+        api_key_env="GEMINI_API_KEY",
+        base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+        default_model="gemini-1.5-flash",
+        models=[
+            ModelDefinition(id="gemini-1.5-flash", name="Gemini 1.5 Flash"),
+            ModelDefinition(id="gemini-1.5-pro", name="Gemini 1.5 Pro"),
+        ]
+    ),
     "groq": ProviderDefinition(
         id="groq",
         name="Groq",
@@ -33,17 +45,6 @@ PROVIDER_REGISTRY = {
             ModelDefinition(id="openai/gpt-oss-20b", name="GPT-OSS 20B"),
         ]
     ),
-    "gorouter": ProviderDefinition(
-        id="gorouter",
-        name="GoRouter",
-        enabled=os.getenv("LLM_GOROUTER_ENABLED", "false").lower() == "true",
-        api_key_env="GOROUTER_API_KEY",
-        base_url="https://gorouter.app/v1",
-        default_model="claude-opus-5",
-        models=[
-            ModelDefinition(id="claude-opus-5", name="Claude Opus 5"),
-        ]
-    ),
     "tokenforge": ProviderDefinition(
         id="tokenforge",
         name="TokenForge",
@@ -52,8 +53,6 @@ PROVIDER_REGISTRY = {
         base_url="https://tokenforge.ai.studio/v1",
         default_model="claude-opus-5",
         models=[
-            ModelDefinition(id="claude-fable-5", name="Claude Fable 5"),
-            ModelDefinition(id="glm-5.3", name="GLM 5.3"),
             ModelDefinition(id="claude-opus-5", name="Claude Opus 5"),
         ]
     ),
