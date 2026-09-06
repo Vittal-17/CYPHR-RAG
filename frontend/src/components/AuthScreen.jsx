@@ -151,7 +151,24 @@ const AuthScreen = ({ onAuthSuccess }) => {
       isLogin ? 'Those credentials were not accepted.' : 'That account could not be created.'
     );
   };
+  const handleGithubLogin = async () => {
+    try {
+      setLoading(true);
+      setError(null);
 
+      const res = await axios.get('/api/auth/github/login');
+
+      if (res.data?.url) {
+        window.location.href = res.data.url;
+        return;
+      }
+
+      throw new Error('GitHub authorization URL was not returned.');
+    } catch (err) {
+      setError(errorDetail(err, 'GitHub sign-in could not be initiated.'));
+      setLoading(false);
+    }
+  };
   const handleGoogle = (credentialResponse) => {
     const credential = credentialResponse?.credential;
     if (!credential) {
