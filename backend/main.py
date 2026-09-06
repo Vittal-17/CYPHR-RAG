@@ -11,6 +11,10 @@ from pydantic import BaseModel, EmailStr
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 import os
+import httpx
+import secrets
+from fastapi.responses import RedirectResponse
+from urllib.parse import urlencode
 import logging
 from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
@@ -107,6 +111,9 @@ async def health_check():
 # Read environment variables
 IS_PRODUCTION = os.getenv("ENVIRONMENT") == "production"
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
+GITHUB_CLIENT_ID = os.getenv("GITHUB_CLIENT_ID")
+GITHUB_CLIENT_SECRET = os.getenv("GITHUB_CLIENT_SECRET")
+
 
 if IS_PRODUCTION:
     COOKIE_SAMESITE = os.getenv("COOKIE_SAMESITE", "none").lower()
@@ -336,6 +343,119 @@ async def google_auth(request: Request, body_req: GoogleAuthRequest, response: R
     except ValueError as e:
         logger.warning("GOOGLE VERIFY ERROR: Invalid Google token")
         raise HTTPException(status_code=401, detail="Invalid Google token")
+
+
+
+@app.get("/api/auth/github/login")
+async def github_login(request: Request, response: Response):
+    state = secrets.token_urlsafe(16)
+    
+    # We will set a short-lived cookie for the state
+    response.set_cookie(
+        key="github_oauth_state",
+        value=state,
+        httponly=True,
+        samesite=COOKIE_SAMESITE,
+        secure=IS_PRODUCTION,
+        max_age=300
+    )
+    
+    params = {
+        "client_id": GITHUB_CLIENT_ID,
+        "state": state,
+        "scope": "user:email"
+    }
+    url = f"https://github.com/login/oauth/authorize?{urlencode(params)}"
+    return {"url": url} # Return JSON so frontend can redirect
+
+@app.get("/api/auth/github/callback")
+async def github_callback(request: Request, response: Response, code: str, state: str):
+    # Validate State (CSRF)
+    cookie_state = request.cookies.get("github_oauth_state")
+    if not cookie_state or cookie_state != state:
+        logger.warning("GITHUB OAUTH ERROR: Invalid state parameter")
+        return RedirectResponse(url=f"{os.getenv('FRONTEND_URL', 'http://localhost:5173')}/login?error=Invalid+state")
+    
+    # Exchange code for token
+    async with httpx.AsyncClient() as client:
+        token_response = await client.post(
+            "https://github.com/login/oauth/access_token",
+            headers={"Accept": "application/json"},
+            data={
+                "client_id": GITHUB_CLIENT_ID,
+                "client_secret": GITHUB_CLIENT_SECRET,
+                "code": code,
+                "state": state
+            },
+            timeout=10.0
+        )
+        token_data = token_response.json()
+        access_token = token_data.get("access_token")
+        
+        if not access_token:
+            logger.warning("GITHUB OAUTH ERROR: Failed to get access token")
+            return RedirectResponse(url=f"{os.getenv('FRONTEND_URL', 'http://localhost:5173')}/login?error=Authentication+failed")
+            
+        # Get user profile
+        user_response = await client.get(
+            "https://api.github.com/user",
+            headers={"Authorization": f"Bearer {access_token}"},
+            timeout=10.0
+        )
+        user_data = user_response.json()
+        
+        name = user_data.get("name") or user_data.get("login") or "GitHub User"
+        email = user_data.get("email")
+        
+        # If email is private, we must fetch from /user/emails
+        if not email:
+            emails_response = await client.get(
+                "https://api.github.com/user/emails",
+                headers={"Authorization": f"Bearer {access_token}"},
+                timeout=10.0
+            )
+            emails_data = emails_response.json()
+            for e in emails_data:
+                if e.get("primary") and e.get("verified"):
+                    email = e.get("email")
+                    break
+            if not email:
+                # Fallback to any verified email
+                for e in emails_data:
+                    if e.get("verified"):
+                        email = e.get("email")
+                        break
+        
+        if not email:
+            logger.warning("GITHUB OAUTH ERROR: No verified email found")
+            return RedirectResponse(url=f"{os.getenv('FRONTEND_URL', 'http://localhost:5173')}/login?error=No+verified+email")
+            
+        # Find or create CYPHR user
+        user = await users_collection.find_one({"email": email})
+        if not user:
+            user_doc = {
+                "email": email,
+                "fullname": name,
+                "hashed_password": None,
+                "auth_provider": "github"
+            }
+            await users_collection.insert_one(user_doc)
+            
+        # Create JWT and set cookie
+        from auth import ACCESS_TOKEN_EXPIRE_MINUTES, create_access_token
+        jwt_token = create_access_token(data={"sub": email})
+        
+        redirect_url = os.getenv('FRONTEND_URL', 'http://localhost:5173')
+        redirect_response = RedirectResponse(url=redirect_url)
+        redirect_response.set_cookie(
+            key="access_token",
+            value=jwt_token,
+            httponly=True,
+            samesite=COOKIE_SAMESITE,
+            secure=IS_PRODUCTION,
+            max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60
+        )
+        return redirect_response
 
 @app.post("/api/logout")
 @limiter.limit(RATE_LIMIT_GENERAL)

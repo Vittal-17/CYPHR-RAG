@@ -7,6 +7,7 @@ import {
   AlertTriangle,
   Eye,
   EyeOff,
+  Github,
   FileText,
   Loader2,
   Quote,
@@ -81,6 +82,16 @@ const AuthScreen = ({ onAuthSuccess }) => {
   // Switching intent clears the secrets: the two modes want different
   // autocomplete values, and a manager-filled password should not silently
   // become a new account's password.
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const err = params.get('error');
+    if (err) {
+      setError(err.replace(/\+/g, ' '));
+      window.history.replaceState({}, document.title, window.location.pathname);
+    }
+  }, []);
+
   const switchMode = useCallback((login) => {
     setIsLogin(login);
     setError(null);
@@ -360,18 +371,29 @@ const AuthScreen = ({ onAuthSuccess }) => {
 
               <div
                 className={clsx(
-                  'mt-comfortable flex justify-center',
+                  'mt-comfortable flex flex-col items-center gap-3',
                   loading && 'pointer-events-none opacity-55'
                 )}
               >
-                <GoogleLogin
-                  onSuccess={handleGoogle}
-                  onError={() => setError('Google sign-in could not be completed.')}
-                  theme={currentTheme === "dark" ? "filled_black" : "outline"}
-                  size="large"
-                  shape="rectangular"
-                  text={isLogin ? 'signin_with' : 'signup_with'}
-                />
+                <div className="w-[240px] flex justify-center">
+                  <GoogleLogin
+                    onSuccess={handleGoogle}
+                    onError={() => setError('Google sign-in could not be completed.')}
+                    theme={currentTheme === "dark" ? "filled_black" : "outline"}
+                    size="large"
+                    shape="rectangular"
+                    width="240"
+                    text={isLogin ? 'signin_with' : 'signup_with'}
+                  />
+                </div>
+                <button
+                  type="button"
+                  onClick={handleGithubLogin}
+                  className="flex w-[240px] items-center justify-center gap-3 rounded-md border border-line-strong bg-surface-0 py-[9px] text-sub font-medium text-ink shadow-sm transition-all hover:bg-surface-2 hover:-translate-y-px"
+                >
+                  <Github className="h-4 w-4" />
+                  {isLogin ? 'Sign in with GitHub' : 'Sign up with GitHub'}
+                </button>
               </div>
             </div>
           </div>
