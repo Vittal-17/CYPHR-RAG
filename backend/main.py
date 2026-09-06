@@ -125,12 +125,13 @@ if COOKIE_SAMESITE not in ["lax", "strict", "none"]:
 if COOKIE_SAMESITE == "none" and not IS_PRODUCTION:
     COOKIE_SAMESITE = "lax"
 
-ALLOWED_ORIGIN = os.getenv("FRONTEND_URL")
-if not ALLOWED_ORIGIN:
+FRONTEND_URL = os.getenv("FRONTEND_URL")
+if not FRONTEND_URL:
     if IS_PRODUCTION:
         raise ValueError("FATAL: FRONTEND_URL environment variable must be set in production")
-    ALLOWED_ORIGIN = "http://localhost:5173"
-ALLOWED_ORIGIN = ALLOWED_ORIGIN.rstrip('/')
+    FRONTEND_URL = "http://localhost:5173"
+FRONTEND_URL = FRONTEND_URL.rstrip('/')
+ALLOWED_ORIGIN = FRONTEND_URL
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
@@ -374,7 +375,7 @@ async def github_callback(request: Request, response: Response, code: str, state
     cookie_state = request.cookies.get("github_oauth_state")
     if not cookie_state or cookie_state != state:
         logger.warning("GITHUB OAUTH ERROR: Invalid state parameter")
-        return RedirectResponse(url=f"{os.getenv('FRONTEND_URL', 'http://localhost:5173')}/login?error=Invalid+state")
+        return RedirectResponse(url=f"{FRONTEND_URL}/login?error=Invalid+state")
     
     # Exchange code for token
     async with httpx.AsyncClient() as client:
@@ -394,7 +395,7 @@ async def github_callback(request: Request, response: Response, code: str, state
         
         if not access_token:
             logger.warning("GITHUB OAUTH ERROR: Failed to get access token")
-            return RedirectResponse(url=f"{os.getenv('FRONTEND_URL', 'http://localhost:5173')}/login?error=Authentication+failed")
+            return RedirectResponse(url=f"{FRONTEND_URL}/login?error=Authentication+failed")
             
         # Get user profile
         user_response = await client.get(
@@ -428,7 +429,7 @@ async def github_callback(request: Request, response: Response, code: str, state
         
         if not email:
             logger.warning("GITHUB OAUTH ERROR: No verified email found")
-            return RedirectResponse(url=f"{os.getenv('FRONTEND_URL', 'http://localhost:5173')}/login?error=No+verified+email")
+            return RedirectResponse(url=f"{FRONTEND_URL}/login?error=No+verified+email")
             
         # Find or create CYPHR user
         user = await users_collection.find_one({"email": email})
@@ -445,7 +446,7 @@ async def github_callback(request: Request, response: Response, code: str, state
         from auth import ACCESS_TOKEN_EXPIRE_MINUTES, create_access_token
         jwt_token = create_access_token(data={"sub": email})
         
-        redirect_url = os.getenv('FRONTEND_URL', 'http://localhost:5173')
+        redirect_url = FRONTEND_URL
         redirect_response = RedirectResponse(url=redirect_url)
         redirect_response.set_cookie(
             key="access_token",

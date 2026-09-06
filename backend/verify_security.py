@@ -2687,6 +2687,38 @@ class TestProviderRegistry(unittest.IsolatedAsyncioTestCase):
 
         app.dependency_overrides = {}
 
+
+class TestFrontendURLConfiguration(unittest.TestCase):
+    def test_production_missing_frontend_url_fails(self):
+        import importlib
+        import os
+        import main
+        with patch.dict(os.environ, {"ENVIRONMENT": "production"}):
+            if "FRONTEND_URL" in os.environ:
+                del os.environ["FRONTEND_URL"]
+            with self.assertRaisesRegex(ValueError, "FATAL: FRONTEND_URL environment variable must be set in production"):
+                importlib.reload(main)
+
+    def test_development_fallback_frontend_url(self):
+        import importlib
+        import os
+        import main
+        with patch.dict(os.environ, {"ENVIRONMENT": "development"}):
+            if "FRONTEND_URL" in os.environ:
+                del os.environ["FRONTEND_URL"]
+            importlib.reload(main)
+            self.assertEqual(main.FRONTEND_URL, "http://localhost:5173")
+
+    def test_production_configured_frontend_url(self):
+        import importlib
+        import os
+        import main
+        with patch.dict(os.environ, {"ENVIRONMENT": "production", "FRONTEND_URL": "https://cyphr-rag.vercel.app"}):
+            importlib.reload(main)
+            self.assertEqual(main.FRONTEND_URL, "https://cyphr-rag.vercel.app")
+            self.assertEqual(main.ALLOWED_ORIGIN, "https://cyphr-rag.vercel.app")
+
 if __name__ == '__main__':
+
     unittest.main(testRunner=unittest.TextTestRunner(
         resultclass=EmojiTestResult, verbosity=2))
