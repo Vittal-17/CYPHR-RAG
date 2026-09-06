@@ -1,0 +1,30 @@
+:80 {
+    encode gzip zstd
+
+    # Backend API
+    handle /api/* {
+        reverse_proxy backend:8000
+    }
+
+    # Chat endpoint
+    handle /chat {
+        reverse_proxy backend:8000
+    }
+
+    # Upload endpoint
+    handle /upload {
+        reverse_proxy backend:8000
+    }
+
+    # Health endpoint
+    handle /health {
+        reverse_proxy backend:8000
+    }
+
+    # React SPA
+    handle {
+        root * /srv
+        try_files {path} /index.html
+        file_server
+    }
+}

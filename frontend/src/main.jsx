@@ -6,7 +6,7 @@ import axios from 'axios'
 import { GoogleOAuthProvider } from '@react-oauth/google'
 
 axios.defaults.withCredentials = true;
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, "") || "http://localhost:8000";
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, "") ?? "";
 axios.defaults.baseURL = API_BASE_URL;
 
 let csrfToken = null;
@@ -57,7 +57,7 @@ axios.interceptors.response.use(
       } else if (headers) {
         retryAfter = headers['retry-after'] || headers['Retry-After'];
       }
-      
+
       if (retryAfter && !isNaN(retryAfter)) {
         const seconds = parseInt(retryAfter, 10);
         if (seconds > 0) {
@@ -73,7 +73,7 @@ axios.interceptors.response.use(
             const hours = Math.round(seconds / 3600);
             durationStr = `about ${hours} hour${hours !== 1 ? 's' : ''}`;
           }
-          
+
           if (error.response.data && typeof error.response.data.detail === 'string') {
             // Check to avoid duplicating if interceptor runs twice (though it shouldn't)
             if (!error.response.data.detail.includes('Try again in')) {
