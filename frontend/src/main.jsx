@@ -34,11 +34,12 @@ axios.interceptors.request.use(async (config) => {
     return config;
   }
 
+  if (!csrfToken) {
+    await fetchCsrfToken();
+  }
+
   const methods = ['post', 'put', 'patch', 'delete'];
   if (methods.includes(config.method?.toLowerCase())) {
-    if (!csrfToken) {
-      await fetchCsrfToken();
-    }
     if (csrfToken) {
       config.headers['X-CSRF-Token'] = csrfToken;
     }
