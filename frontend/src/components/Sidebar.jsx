@@ -4,6 +4,7 @@ import toast from 'react-hot-toast';
 import clsx from 'clsx';
 import {
   Check,
+  Loader2,
   Database,
   LogOut,
   MessageSquare,
@@ -229,10 +230,11 @@ const Sidebar = ({
                   <button
                     type="button"
                     onClick={() => handleDelete(chat.chat_id)}
+                    disabled={deletingChatId === chat.chat_id}
                     className="icon-btn icon-btn-danger h-7 w-7"
                     aria-label={`Confirm deleting ${title}`}
                   >
-                    <Check className="h-3.5 w-3.5" />
+                    {deletingChatId === chat.chat_id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
                   </button>
                   <button
                     type="button"
@@ -363,7 +365,7 @@ const Sidebar = ({
                 data-tip="New chat"
                 aria-label="New chat"
               >
-                <Plus className="h-4 w-4" />
+                {creating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
               </button>
               <button
                 type="button"
@@ -387,7 +389,7 @@ const Sidebar = ({
           ) : (
             <>
               <button type="button" onClick={handleNewChat} disabled={creating} className="btn btn-primary w-full">
-                <Plus className="h-4 w-4" />
+                {creating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
                 New chat
               </button>
               <button
