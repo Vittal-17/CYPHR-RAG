@@ -614,7 +614,9 @@ async def chat(request: Request, body_req: ChatRequest, current_user: dict = Dep
             chat_title = chat_exists.get("title", "New Conversation")
 
         generated_title = None
-        if chat_title == "New Conversation":
+
+        async def handle_title_generation():
+            nonlocal generated_title
             new_title = await generate_auto_title(request.message)
             if new_title and new_title != "New Conversation":
                 await chats_collection.update_one(
@@ -623,8 +625,16 @@ async def chat(request: Request, body_req: ChatRequest, current_user: dict = Dep
                 )
                 generated_title = new_title
 
-        # Generate response
-        answer = await generate_chat_response(request.message, current_user["email"], provider_id=request.provider, model_id=request.model)
+        import asyncio
+        if chat_title == "New Conversation":
+            # Run title generation and chat response concurrently
+            _, answer = await asyncio.gather(
+                handle_title_generation(),
+                generate_chat_response(request.message, current_user["email"], provider_id=request.provider, model_id=request.model)
+            )
+        else:
+            # Generate response only
+            answer = await generate_chat_response(request.message, current_user["email"], provider_id=request.provider, model_id=request.model)
 
         # Update chat thread
         user_msg = {"role": "user", "content": request.message, "timestamp": datetime.now(timezone.utc)}
