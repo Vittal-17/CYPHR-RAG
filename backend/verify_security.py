@@ -634,11 +634,11 @@ print("SET_COOKIE:", set_cookie)
             with temporary_cookies(client, cookies):
                 # 10 allowed
                 for _ in range(10):
-                    res = client.post('/api/login', json={"email": "t@t.com", "password": "1"}, headers=headers)
+                    res = client.post('/api/login', json={"email": "t@t.com", "password": "securepassword123"}, headers=headers)
                     self.assertEqual(res.status_code, 401)
 
                 # 11th should be 429
-                res = client.post('/api/login', json={"email": "t@t.com", "password": "1"}, headers=headers)
+                res = client.post('/api/login', json={"email": "t@t.com", "password": "securepassword123"}, headers=headers)
                 self.assertEqual(res.status_code, 429)
             self.assertIn("Too many login attempts", res.json()["detail"])
             self.assertIn("retry-after", res.headers)
@@ -780,7 +780,7 @@ print("SET_COOKIE:", set_cookie)
         token = res_csrf.json()['csrf_token']
 
         with temporary_cookies(client, {'csrf_token': token}):
-            response = client.post('/api/register', json={"fullname": "test", "email": "new@test.com", "password": "123"}, headers={'X-CSRF-Token': token, 'Origin': 'http://localhost:5173'})
+            response = client.post('/api/register', json={"fullname": "test", "email": "new@test.com", "password": "securepassword123"}, headers={'X-CSRF-Token': token, 'Origin': 'http://localhost:5173'})
         set_cookies = response.headers.get_list('set-cookie')
         access_cookie = next(c for c in set_cookies if c.startswith('access_token='))
 
@@ -800,7 +800,7 @@ print("SET_COOKIE:", set_cookie)
         token = res_csrf.json()['csrf_token']
 
         with temporary_cookies(client, {'csrf_token': token}):
-            response = client.post('/api/register', json={"fullname": "test", "email": "new2@test.com", "password": "123"}, headers={'X-CSRF-Token': token, 'Origin': 'http://localhost:5173'})
+            response = client.post('/api/register', json={"fullname": "test", "email": "new2@test.com", "password": "securepassword123"}, headers={'X-CSRF-Token': token, 'Origin': 'http://localhost:5173'})
         set_cookies = response.headers.get_list('set-cookie')
         access_cookie = next(c for c in set_cookies if c.startswith('access_token='))
         self.assertIn('samesite=none', access_cookie.lower())
@@ -979,7 +979,7 @@ print(main.IS_PRODUCTION)
         mock_verify.return_value = False
 
         with temporary_cookies(client, {'csrf_token': 'a'}):
-            response = client.post('/api/login', json={"email": "nonexistent@test.com", "password": "abc"}, headers={'Origin': 'http://localhost:5173', 'X-CSRF-Token': 'a'})
+            response = client.post('/api/login', json={"email": "nonexistent@test.com", "password": "securepassword123"}, headers={'Origin': 'http://localhost:5173', 'X-CSRF-Token': 'a'})
         self.assertEqual(response.status_code, 401)
         self.assertTrue(mock_verify.called)
 

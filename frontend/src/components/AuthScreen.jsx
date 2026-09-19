@@ -51,8 +51,8 @@ const CAPABILITIES = [
  * in front of it.
  *
  * Validation mirrors only what the server actually enforces: a well-formed
- * address and fields that are present. The API sets no password length or
- * complexity rules, so this screen invents none — the single extra check is the
+ * address and fields that are present. The API requires a minimum password length of 8
+ * characters for registration, which we mirror here. The single extra check is the
  * register-time confirmation, which exists purely to catch typing mistakes.
  */
 const AuthScreen = ({ onAuthSuccess }) => {
@@ -318,6 +318,7 @@ const AuthScreen = ({ onAuthSuccess }) => {
                       required
                       autoComplete={isLogin ? 'current-password' : 'new-password'}
                       value={form.password}
+                      minLength={isLogin ? undefined : 8}
                       onChange={handleChange}
                       disabled={loading}
                       className="field pr-11 disabled:opacity-60"
