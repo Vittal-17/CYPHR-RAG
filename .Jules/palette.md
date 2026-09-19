@@ -1,0 +1,3 @@
+## 2024-11-20 - Async feedback on destructive and primary actions
+**Learning:** For primary actions (e.g., "New chat") and destructive actions (e.g., "Confirm delete") that execute asynchronously, failing to provide immediate visual feedback (like a loading spinner) and disabling concurrent actions (like "Keep" during delete) leads to a poor user experience. Users might click again, causing duplicate submissions, or abandon the process because they think it's broken.
+**Action:** Always include a visual loading state (like `Loader2` from `lucide-react`) and disable interacting buttons during async state transitions for all primary and destructive operations.
