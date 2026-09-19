@@ -258,6 +258,8 @@ async def register(request: Request, body_req: RegisterRequest, response: Respon
     if existing_user:
         raise HTTPException(status_code=400, detail="Email already registered")
 
+    if len(request.password) < 8:
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters long")
     hashed_password = get_password_hash(request.password)
     user_doc = {
         "fullname": request.fullname,
