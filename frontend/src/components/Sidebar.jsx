@@ -17,6 +17,7 @@ import {
   X,
 } from 'lucide-react';
 import CyphrMark from './ui/CyphrMark';
+import ChatRow from './ChatRow';
 import { groupChatsByRecency, pluralize } from '../lib/format';
 import { errorDetail } from '../lib/errors';
 import { focusablesIn } from '../lib/focus';
@@ -48,11 +49,9 @@ const Sidebar = ({
   documentCount = 0,
 }) => {
   const [editingChatId, setEditingChatId] = useState(null);
-  const [editTitle, setEditTitle] = useState('');
   const [pendingDeleteId, setPendingDeleteId] = useState(null);
   const [deletingChatId, setDeletingChatId] = useState(null);
   const [creating, setCreating] = useState(false);
-  const inputRef = useRef(null);
   const asideRef = useRef(null);
   const closeRef = useRef(null);
   const restoreFocusRef = useRef(null);
@@ -64,8 +63,6 @@ const Sidebar = ({
 
   useEffect(() => {
     if (!editingChatId) return;
-    inputRef.current?.focus();
-    inputRef.current?.select();
   }, [editingChatId]);
 
   // The drawer covers the app behind a scrim, so it takes focus while it is
@@ -152,8 +149,8 @@ const Sidebar = ({
   );
 
   const saveTitle = useCallback(
-    async (chatId) => {
-      const title = editTitle.trim();
+    async (chatId, newTitle) => {
+      const title = newTitle.trim();
       setEditingChatId(null);
       const current = chats.find((chat) => chat.chat_id === chatId);
       if (!title || title === current?.title) return;
@@ -164,123 +161,15 @@ const Sidebar = ({
         toast.error(errorDetail(error, 'Could not rename that conversation.'));
       }
     },
-    [chats, editTitle, setChats]
+    [chats, setChats]
   );
 
-  const startEditing = (chat) => {
+  const startEditing = useCallback((chatId) => {
     setPendingDeleteId(null);
-    setEditTitle(chat.title ?? '');
-    setEditingChatId(chat.chat_id);
-  };
+    setEditingChatId(chatId);
+  }, []);
 
   const initial = (user?.fullname || user?.email || '?').trim().charAt(0).toUpperCase() || '?';
-
-  const renderChatRow = (chat) => {
-    const isActive = chat.chat_id === activeChatId;
-    const isEditing = editingChatId === chat.chat_id;
-    const isConfirming = pendingDeleteId === chat.chat_id;
-    const title = chat.title || 'Untitled';
-
-    return (
-      <li key={chat.chat_id}>
-        <div
-          className={clsx(
-            'group relative flex items-center gap-1 rounded-md pl-2.5 pr-1.5 transition-all duration-fast ease-standard hover:-translate-y-px hover:shadow-subtle',
-            isActive ? 'active-rule bg-surface-3 text-ink shadow-subtle' : 'text-ink-dim hover:bg-surface-3/60 hover:text-ink',
-            isConfirming && 'bg-danger/10'
-          )}
-        >
-          {isEditing ? (
-            <input
-              ref={inputRef}
-              value={editTitle}
-              aria-label="Conversation title"
-              onChange={(event) => setEditTitle(event.target.value)}
-              onBlur={() => saveTitle(chat.chat_id)}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter') {
-                  event.preventDefault();
-                  saveTitle(chat.chat_id);
-                } else if (event.key === 'Escape') {
-                  event.preventDefault();
-                  setEditingChatId(null);
-                }
-              }}
-              className="field my-1 h-8 w-full py-0 text-cap"
-            />
-          ) : (
-            <>
-              <button
-                type="button"
-                onClick={() => onSelectChat(chat.chat_id)}
-                aria-current={isActive ? 'true' : undefined}
-                className="flex min-w-0 flex-1 items-center gap-2.5 rounded-sm py-2 text-left"
-              >
-                <MessageSquare
-                  className={clsx(
-                    'h-3.5 w-3.5 shrink-0 transition-colors duration-fast',
-                    isActive ? 'text-accent' : 'text-ink-faint group-hover:text-accent'
-                  )}
-                />
-                <span className="truncate text-cap font-medium">{title}</span>
-              </button>
-
-              {isConfirming ? (
-                <span className="flex shrink-0 items-center gap-0.5">
-                  <button
-                    type="button"
-                    onClick={() => handleDelete(chat.chat_id)}
-                    disabled={deletingChatId === chat.chat_id}
-                    className="icon-btn icon-btn-danger h-7 w-7"
-                    aria-label={`Confirm deleting ${title}`}
-                  >
-                    {deletingChatId === chat.chat_id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setPendingDeleteId(null)}
-                    disabled={deletingChatId === chat.chat_id}
-                    className="icon-btn h-7 w-7"
-                    aria-label="Keep conversation"
-                  >
-                    <X className="h-3.5 w-3.5" />
-                  </button>
-                </span>
-              ) : (
-                <span
-                  className={clsx(
-                    'flex shrink-0 items-center gap-0.5 transition-opacity duration-fast',
-                    // Hover cannot reveal anything on a touch screen, so where
-                    // there is no hover the row's actions are simply always on.
-                    'opacity-0 focus-within:opacity-100 group-hover:opacity-100 [@media(hover:none)]:opacity-100',
-                    isActive && 'opacity-70'
-                  )}
-                >
-                  <button
-                    type="button"
-                    onClick={() => startEditing(chat)}
-                    className="icon-btn h-7 w-7"
-                    aria-label={`Rename ${title}`}
-                  >
-                    <Pencil className="h-3.5 w-3.5" />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setPendingDeleteId(chat.chat_id)}
-                    disabled={deletingChatId === chat.chat_id}
-                    className="icon-btn icon-btn-danger h-7 w-7"
-                    aria-label={`Delete ${title}`}
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </button>
-                </span>
-              )}
-            </>
-          )}
-        </div>
-      </li>
-    );
-  };
 
   const shell = clsx(
     'z-drawer flex h-full shrink-0 flex-col border-r border-line bg-surface-1/80 backdrop-blur-xl',
@@ -461,7 +350,22 @@ const Sidebar = ({
                   {group.label}
                 </h3>
                 <ul className="space-y-px px-2">
-                  {group.chats.map((chat) => renderChatRow(chat))}
+                                    {group.chats.map((chat) => (
+                    <ChatRow
+                      key={chat.chat_id}
+                      chat={chat}
+                      isActive={chat.chat_id === activeChatId}
+                      isEditing={editingChatId === chat.chat_id}
+                      isConfirming={pendingDeleteId === chat.chat_id}
+                      saveTitle={saveTitle}
+                      setEditingChatId={setEditingChatId}
+                      onSelectChat={onSelectChat}
+                      handleDelete={handleDelete}
+                      deletingChatId={deletingChatId}
+                      setPendingDeleteId={setPendingDeleteId}
+                      startEditing={startEditing}
+                    />
+                  ))}
                 </ul>
               </section>
             ))
