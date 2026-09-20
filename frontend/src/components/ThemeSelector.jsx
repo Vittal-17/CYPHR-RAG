@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Sun, Moon, Monitor } from 'lucide-react';
 import clsx from 'clsx';
 
-const ThemeSelector = ({ compact }) => {
+const ThemeSelector = () => {
   const [theme, setTheme] = useState('light');
   const [isOpen, setIsOpen] = useState(false);
 
@@ -37,6 +37,8 @@ const ThemeSelector = ({ compact }) => {
         className="icon-btn tip tip-below relative"
         data-tip="Theme"
         aria-label="Select theme"
+        aria-haspopup="true"
+        aria-expanded={isOpen}
       >
         <CurrentIcon className="h-4 w-4 text-ink-dim hover:text-ink transition-colors" />
       </button>
@@ -44,12 +46,18 @@ const ThemeSelector = ({ compact }) => {
       {isOpen && (
         <>
           <div className="fixed inset-0 z-chrome" onClick={() => setIsOpen(false)} />
-          <div className="absolute right-0 top-full mt-1.5 w-36 overflow-hidden rounded-lg border border-line bg-surface-2 shadow-panel z-overlay animate-scale-in origin-top-right">
+          <div
+            className="absolute right-0 top-full mt-1.5 w-36 overflow-hidden rounded-lg border border-line bg-surface-2 shadow-panel z-overlay animate-scale-in origin-top-right"
+            role="menu"
+            aria-label="Theme selection"
+          >
             <div className="flex flex-col py-1">
               {themes.map((t) => (
                 <button
                   key={t.id}
                   type="button"
+                  role="menuitemradio"
+                  aria-checked={theme === t.id}
                   onClick={() => changeTheme(t.id)}
                   className={clsx(
                     'flex items-center gap-2.5 px-3 py-2 text-sub font-medium transition-all duration-fast ease-standard hover:-translate-y-px hover:shadow-subtle hover:bg-surface-3',
