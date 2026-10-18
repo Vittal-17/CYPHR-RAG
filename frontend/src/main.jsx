@@ -4,6 +4,7 @@ import App from './App.jsx'
 import './index.css'
 import axios from 'axios'
 import { GoogleOAuthProvider } from '@react-oauth/google'
+import { getAccessToken, clearAccessToken } from './utils/token'
 
 axios.defaults.withCredentials = true;
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, "") ?? "";
@@ -28,14 +29,33 @@ const fetchCsrfToken = () => {
 
 fetchCsrfToken();
 
+const isFirstPartyApiRequest = (url) => {
+  if (!url) return false;
+  // Relative paths (e.g. /api/..., /chat, /upload)
+  if (url.startsWith('/')) return true;
+  // If API_BASE_URL is configured, allow requests explicitly targeted to that backend origin
+  if (API_BASE_URL && url.startsWith(API_BASE_URL)) return true;
+  return false;
+};
+
 axios.interceptors.request.use(async (config) => {
+  const isFirstParty = isFirstPartyApiRequest(config.url);
+
+  // Attach Bearer token fallback if present, but strictly to first-party API endpoints
+  if (isFirstParty) {
+    const token = getAccessToken();
+    if (token) {
+      config.headers['Authorization'] = `Bearer ${token}`;
+    }
+  }
+
   // Prevent infinite loop when fetching csrf token itself
   if (config.url === '/api/csrf') {
     return config;
   }
 
   const methods = ['post', 'put', 'patch', 'delete'];
-  if (methods.includes(config.method?.toLowerCase())) {
+  if (isFirstParty && methods.includes(config.method?.toLowerCase())) {
     if (!csrfToken) {
       await fetchCsrfToken();
     }
@@ -82,6 +102,9 @@ axios.interceptors.response.use(
           }
         }
       }
+    }
+    if (error.response && error.response.status === 401) {
+      clearAccessToken();
     }
     return Promise.reject(error);
   }

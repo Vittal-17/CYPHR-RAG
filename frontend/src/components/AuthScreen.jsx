@@ -19,6 +19,7 @@ import AuthLoadingOverlay from './AuthLoadingOverlay';
 import Atmosphere from './ui/Atmosphere';
 import CyphrMark from './ui/CyphrMark';
 import { withAuthDelay } from '../utils/authDelay';
+import { setAccessToken } from '../utils/token';
 import { errorDetail } from '../lib/errors';
 
 const EMPTY_FORM = { fullname: '', email: '', password: '', confirmPassword: '' };
@@ -105,6 +106,10 @@ const AuthScreen = ({ onAuthSuccess }) => {
       setError(null);
       try {
         const res = await withAuthDelay(request);
+        const token = res.data?.access || res.data?.access_token;
+        if (token) {
+          setAccessToken(token);
+        }
         toast.success(success);
         // App swaps this screen for the workspace, so no state is reset here.
         onAuthSuccess?.(res.data?.user);

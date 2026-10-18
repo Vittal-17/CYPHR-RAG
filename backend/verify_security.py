@@ -2689,6 +2689,28 @@ class TestProviderRegistry(unittest.IsolatedAsyncioTestCase):
 
 
 class TestFrontendURLConfiguration(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        import os
+        import main
+        cls._orig_get_current_user = main.get_current_user
+        cls._orig_app = main.app
+        cls._orig_env = os.environ.get("ENVIRONMENT")
+        cls._orig_frontend_url = os.environ.get("FRONTEND_URL")
+
+    @classmethod
+    def tearDownClass(cls):
+        import importlib
+        import os
+        import main
+        with patch.dict(os.environ, {
+            "ENVIRONMENT": cls._orig_env or "development",
+            "FRONTEND_URL": cls._orig_frontend_url or "http://localhost:5173"
+        }):
+            importlib.reload(main)
+        main.get_current_user = cls._orig_get_current_user
+        main.app = cls._orig_app
+
     def test_production_missing_frontend_url_fails(self):
         import importlib
         import os
@@ -2717,6 +2739,367 @@ class TestFrontendURLConfiguration(unittest.TestCase):
             importlib.reload(main)
             self.assertEqual(main.FRONTEND_URL, "https://cyphr-rag.vercel.app")
             self.assertEqual(main.ALLOWED_ORIGIN, "https://cyphr-rag.vercel.app")
+
+class TestDynamicDualAuthAndMultiDomain(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        import main
+        main.app.dependency_overrides = {}
+        client.cookies.clear()
+
+    def tearDown(self):
+        import main
+        main.app.dependency_overrides = {}
+        client.cookies.clear()
+
+    def test_dynamic_samesite_cyphr_cfd(self):
+        import main
+        main.IS_PRODUCTION = True
+        response = client.get('/api/csrf', headers={'Origin': 'https://cyphr.cfd'})
+        set_cookies = response.headers.get_list('set-cookie')
+        csrf_cookie = next((c for c in set_cookies if c.startswith('csrf_token=')), None)
+        self.assertIsNotNone(csrf_cookie)
+        self.assertIn('samesite=lax', csrf_cookie.lower())
+        main.IS_PRODUCTION = False
+
+    def test_dynamic_samesite_vercel_app(self):
+        import main
+        main.IS_PRODUCTION = True
+        response = client.get('/api/csrf', headers={'Origin': 'https://cyphr-rag.vercel.app'})
+        set_cookies = response.headers.get_list('set-cookie')
+        csrf_cookie = next((c for c in set_cookies if c.startswith('csrf_token=')), None)
+        self.assertIsNotNone(csrf_cookie)
+        self.assertIn('samesite=none', csrf_cookie.lower())
+        self.assertIn('secure', csrf_cookie.lower())
+        main.IS_PRODUCTION = False
+
+    def test_dynamic_samesite_localhost(self):
+        import main
+        main.IS_PRODUCTION = False
+        response = client.get('/api/csrf', headers={'Origin': 'http://localhost:5173'})
+        set_cookies = response.headers.get_list('set-cookie')
+        csrf_cookie = next((c for c in set_cookies if c.startswith('csrf_token=')), None)
+        self.assertIsNotNone(csrf_cookie)
+        self.assertIn('samesite=lax', csrf_cookie.lower())
+
+    @patch('main.users_collection.find_one', new_callable=AsyncMock)
+    def test_auth_via_cookie_only(self, mock_find):
+        from auth import create_access_token
+        mock_find.return_value = {"email": "cookie_user@test.com", "fullname": "Cookie User"}
+        token = create_access_token({"sub": "cookie_user@test.com"})
+
+        with temporary_cookies(client, {'access_token': token}):
+            response = client.get('/api/me')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['user']['email'], "cookie_user@test.com")
+
+    @patch('main.users_collection.find_one', new_callable=AsyncMock)
+    def test_auth_via_bearer_header_only(self, mock_find):
+        from auth import create_access_token
+        mock_find.return_value = {"email": "bearer_user@test.com", "fullname": "Bearer User"}
+        token = create_access_token({"sub": "bearer_user@test.com"})
+
+        client.cookies.clear()
+        response = client.get('/api/me', headers={'Authorization': f'Bearer {token}'})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['user']['email'], "bearer_user@test.com")
+
+    @patch('main.users_collection.find_one', new_callable=AsyncMock)
+    def test_auth_expired_cookie_bearer_fallback(self, mock_find):
+        from auth import create_access_token
+        from datetime import timedelta
+        mock_find.return_value = {"email": "fallback_user@test.com", "fullname": "Fallback User"}
+        expired_token = create_access_token({"sub": "fallback_user@test.com"}, expires_delta=timedelta(minutes=-10))
+        valid_token = create_access_token({"sub": "fallback_user@test.com"}, expires_delta=timedelta(minutes=60))
+
+        with temporary_cookies(client, {'access_token': expired_token}):
+            response = client.get('/api/me', headers={'Authorization': f'Bearer {valid_token}'})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['user']['email'], "fallback_user@test.com")
+
+    def test_auth_invalid_bearer_returns_401(self):
+        client.cookies.clear()
+        response = client.get('/api/me', headers={'Authorization': 'Bearer invalid.token.here'})
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.json()['detail'], "Invalid token")
+
+    def test_auth_no_credentials_returns_401(self):
+        client.cookies.clear()
+        response = client.get('/api/me')
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.json()['detail'], "Not authenticated")
+
+    @patch('main.users_collection.find_one', new_callable=AsyncMock)
+    @patch('main.verify_password')
+    def test_login_returns_dual_token_payload(self, mock_verify, mock_find):
+        mock_find.return_value = {"email": "login@test.com", "fullname": "Login User", "hashed_password": "hash"}
+        mock_verify.return_value = True
+
+        res_csrf = client.get('/api/csrf')
+        csrf = res_csrf.json()['csrf_token']
+
+        with temporary_cookies(client, {'csrf_token': csrf}):
+            response = client.post(
+                '/api/login',
+                json={"email": "login@test.com", "password": "valid_password"},
+                headers={'X-CSRF-Token': csrf, 'Origin': 'http://localhost:5173'}
+            )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertIn("access", data)
+        self.assertIn("access_token", data)
+        self.assertEqual(data["access"], data["access_token"])
+        set_cookies = response.headers.get_list('set-cookie')
+        self.assertTrue(any(c.startswith('access_token=') for c in set_cookies))
+
+    @patch('main.users_collection.find_one', new_callable=AsyncMock)
+    @patch('main.users_collection.insert_one', new_callable=AsyncMock)
+    def test_register_returns_dual_token_payload(self, mock_insert, mock_find):
+        mock_find.return_value = None
+        res_csrf = client.get('/api/csrf')
+        csrf = res_csrf.json()['csrf_token']
+
+        with temporary_cookies(client, {'csrf_token': csrf}):
+            response = client.post(
+                '/api/register',
+                json={"fullname": "Reg User", "email": "reg@test.com", "password": "valid_password"},
+                headers={'X-CSRF-Token': csrf, 'Origin': 'http://localhost:5173'}
+            )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertIn("access", data)
+        self.assertIn("access_token", data)
+        self.assertEqual(data["access"], data["access_token"])
+        set_cookies = response.headers.get_list('set-cookie')
+        self.assertTrue(any(c.startswith('access_token=') for c in set_cookies))
+
+    def test_dynamic_key_func_keys_user_from_bearer(self):
+        from main import dynamic_key_func
+        from auth import create_access_token
+
+        token = create_access_token({"sub": "key_user@test.com"})
+        mock_req = MagicMock()
+        mock_req.cookies = {}
+        mock_req.headers = {"authorization": f"Bearer {token}"}
+
+        key = dynamic_key_func(mock_req)
+        self.assertEqual(key, "user:key_user@test.com")
+
+    def test_cors_preflight_cyphr_cfd(self):
+        headers = {'Origin': 'https://cyphr.cfd', 'Access-Control-Request-Method': 'POST'}
+        response = client.options('/api/login', headers=headers)
+        self.assertEqual(response.headers.get('Access-Control-Allow-Origin'), 'https://cyphr.cfd')
+        self.assertEqual(response.headers.get('Access-Control-Allow-Credentials'), 'true')
+
+    def test_cors_preflight_vercel_app(self):
+        headers = {'Origin': 'https://cyphr-rag-preview.vercel.app', 'Access-Control-Request-Method': 'POST'}
+        response = client.options('/api/login', headers=headers)
+        self.assertEqual(response.headers.get('Access-Control-Allow-Origin'), 'https://cyphr-rag-preview.vercel.app')
+        self.assertEqual(response.headers.get('Access-Control-Allow-Credentials'), 'true')
+
+    def test_cors_preflight_attacker_blocked(self):
+        headers = {'Origin': 'https://evil-attacker.com', 'Access-Control-Request-Method': 'POST'}
+        response = client.options('/api/login', headers=headers)
+        self.assertNotEqual(response.headers.get('Access-Control-Allow-Origin'), 'https://evil-attacker.com')
+
+    @patch('main.users_collection.find_one', new_callable=AsyncMock)
+    @patch('main.chats_collection.insert_one', new_callable=AsyncMock)
+    def test_csrf_bearer_only_allowed_with_valid_origin(self, mock_insert, mock_find):
+        from auth import create_access_token
+        mock_find.return_value = {"email": "dual@test.com", "fullname": "Dual User"}
+        token = create_access_token({"sub": "dual@test.com"})
+
+        client.cookies.clear()
+        response = client.post(
+            '/api/chats/new',
+            headers={'Authorization': f'Bearer {token}', 'Origin': 'https://cyphr.cfd'}
+        )
+        self.assertEqual(response.status_code, 200)
+
+    @patch('main.users_collection.find_one', new_callable=AsyncMock)
+    def test_csrf_bearer_only_blocked_with_invalid_origin(self, mock_find):
+        from auth import create_access_token
+        mock_find.return_value = {"email": "dual@test.com", "fullname": "Dual User"}
+        token = create_access_token({"sub": "dual@test.com"})
+
+        client.cookies.clear()
+        response = client.post(
+            '/api/chats/new',
+            headers={'Authorization': f'Bearer {token}', 'Origin': 'https://evil.com'}
+        )
+        self.assertEqual(response.status_code, 403)
+
+    def test_hacker_arbitrary_vercel_subdomain_cors_blocked(self):
+        # Hacker deploys evil-attacker.vercel.app and tries to preflight CORS
+        headers = {'Origin': 'https://evil-attacker.vercel.app', 'Access-Control-Request-Method': 'POST'}
+        response = client.options('/api/login', headers=headers)
+        self.assertNotEqual(response.headers.get('Access-Control-Allow-Origin'), 'https://evil-attacker.vercel.app')
+
+        # Another arbitrary Vercel user
+        headers2 = {'Origin': 'https://random-tenant.vercel.app', 'Access-Control-Request-Method': 'GET'}
+        response2 = client.options('/api/chats', headers=headers2)
+        self.assertNotEqual(response2.headers.get('Access-Control-Allow-Origin'), 'https://random-tenant.vercel.app')
+
+    @patch('main.users_collection.find_one', new_callable=AsyncMock)
+    def test_hacker_arbitrary_vercel_subdomain_csrf_blocked(self, mock_find):
+        from auth import create_access_token
+        mock_find.return_value = {"email": "dual@test.com", "fullname": "Dual User"}
+        token = create_access_token({"sub": "dual@test.com"})
+
+        client.cookies.clear()
+        # Hacker tries to issue state-changing POST from evil-attacker.vercel.app
+        response = client.post(
+            '/api/chats/new',
+            headers={'Authorization': f'Bearer {token}', 'Origin': 'https://evil-attacker.vercel.app'}
+        )
+        self.assertEqual(response.status_code, 403)
+        self.assertIn("CSRF validation failed", response.json().get("detail", ""))
+
+    def test_hacker_spoofed_cyphr_domain_samesite_detection(self):
+        import main
+        main.IS_PRODUCTION = True
+        try:
+            # Subdomain spoof: attacker owns cyphr.cfd.attacker.com
+            response = client.get('/api/csrf', headers={'Origin': 'https://cyphr.cfd.attacker.com'})
+            set_cookies = response.headers.get_list('set-cookie')
+            csrf_cookie = next((c for c in set_cookies if c.startswith('csrf_token=')), None)
+            self.assertIsNotNone(csrf_cookie)
+            # Must NOT be lax because it is an attacker domain, should be 'none'
+            self.assertIn('samesite=none', csrf_cookie.lower())
+
+            # Path spoof: attacker passes cyphr.cfd in referer path
+            response2 = client.get('/api/csrf', headers={'Referer': 'https://attacker.com/cyphr.cfd'})
+            set_cookies2 = response2.headers.get_list('set-cookie')
+            csrf_cookie2 = next((c for c in set_cookies2 if c.startswith('csrf_token=')), None)
+            self.assertIsNotNone(csrf_cookie2)
+            self.assertIn('samesite=none', csrf_cookie2.lower())
+        finally:
+            main.IS_PRODUCTION = False
+
+    def test_production_origins_rejects_plain_http(self):
+        import main
+        main.IS_PRODUCTION = True
+        try:
+            origins = main.get_allowed_origins()
+            self.assertIn("https://cyphr.cfd", origins)
+            self.assertIn("https://www.cyphr.cfd", origins)
+            self.assertNotIn("http://cyphr.cfd", origins)
+            self.assertNotIn("http://www.cyphr.cfd", origins)
+        finally:
+            main.IS_PRODUCTION = False
+
+    def test_github_oauth_invalid_state_evicts_cookie(self):
+        # Invalid state should reject and delete github_oauth_state cookie
+        with temporary_cookies(client, {'github_oauth_state': 'expected_state'}):
+            response = client.get(
+                '/api/auth/github/callback?code=mock_code&state=tampered_state',
+                follow_redirects=False
+            )
+        self.assertEqual(response.status_code, 307)
+        self.assertIn('/login?error=Invalid+state', response.headers.get('location', ''))
+        set_cookies = response.headers.get_list('set-cookie')
+        state_cookie = next((c for c in set_cookies if c.startswith('github_oauth_state=')), None)
+        self.assertIsNotNone(state_cookie)
+        self.assertTrue('max-age=0' in state_cookie.lower() or 'expires=' in state_cookie.lower())
+
+    @patch('httpx.AsyncClient.post')
+    @patch('httpx.AsyncClient.get')
+    @patch('main.users_collection.find_one', new_callable=AsyncMock)
+    @patch('main.users_collection.insert_one', new_callable=AsyncMock)
+    def test_github_oauth_success_uses_hash_fragment_and_evicts_cookie(
+        self, mock_insert, mock_find, mock_http_get, mock_http_post
+    ):
+        mock_find.return_value = {"email": "gh_user@test.com", "fullname": "GH User"}
+
+        # Mock token response
+        mock_token_resp = MagicMock()
+        mock_token_resp.json.return_value = {"access_token": "gh_access_token_123"}
+        mock_http_post.return_value = mock_token_resp
+
+        # Mock user profile response
+        mock_user_resp = MagicMock()
+        mock_user_resp.json.return_value = {"email": "gh_user@test.com", "name": "GH User"}
+        mock_http_get.return_value = mock_user_resp
+
+        with temporary_cookies(client, {'github_oauth_state': 'valid_state'}):
+            response = client.get(
+                '/api/auth/github/callback?code=good_code&state=valid_state',
+                follow_redirects=False
+            )
+
+        self.assertEqual(response.status_code, 307)
+        location = response.headers.get('location', '')
+        # Verify hash fragment is used (#token=) instead of query parameter (?token=)
+        self.assertIn('/#token=', location)
+        self.assertNotIn('/?token=', location)
+
+        # Verify state cookie is evicted
+        set_cookies = response.headers.get_list('set-cookie')
+        state_cookie = next((c for c in set_cookies if c.startswith('github_oauth_state=')), None)
+        self.assertIsNotNone(state_cookie)
+        self.assertTrue('max-age=0' in state_cookie.lower() or 'expires=' in state_cookie.lower())
+
+    @patch("services.collection")
+    @patch("embeddings.JinaEmbeddingProvider.embed_query", new_callable=AsyncMock)
+    @patch("services.get_provider_client")
+    async def test_rag_prompt_context_boundary_fencing(self, mock_provider, mock_embed, mock_coll):
+        from services import generate_chat_response
+        mock_embed.return_value = [0.1] * 768
+        mock_coll.distinct = AsyncMock(return_value=["sample.pdf"])
+        mock_cursor = AsyncMock()
+        mock_cursor.to_list = AsyncMock(return_value=[
+            {"filename": "sample.pdf", "page": 1, "text": "Confidential financial data."}
+        ])
+        mock_coll.aggregate.return_value = mock_cursor
+
+        captured_messages = []
+        mock_llm_response = MagicMock()
+        mock_llm_response.choices = [MagicMock(message=MagicMock(content="Summary of sample.pdf"))]
+        mock_client = MagicMock()
+
+        async def fake_create(*args, **kwargs):
+            nonlocal captured_messages
+            captured_messages = kwargs.get("messages", [])
+            return mock_llm_response
+
+        mock_client.chat.completions.create = fake_create
+        mock_provider.return_value = (mock_client, 'gemini', 'gemini-2.5-flash')
+
+        await generate_chat_response("What is the financial data?", "user@test.com")
+
+        system_msg = next((m["content"] for m in captured_messages if m["role"] == "system"), "")
+        self.assertIn("<context>", system_msg)
+        self.assertIn("</context>", system_msg)
+        self.assertIn("untrusted reference data", system_msg)
+        self.assertIn("Confidential financial data.", system_msg)
+
+    def test_one_year_domain_fallback_vercel_mirror_resilience(self):
+        import main
+        from auth import create_access_token
+
+        # When cyphr.cfd expires after 1 year, the primary mirror is https://cyphr-rag.vercel.app
+        mirror_origin = "https://cyphr-rag.vercel.app"
+        self.assertTrue(main.is_origin_allowed(mirror_origin))
+
+        # Dynamic SameSite returns 'none' for the cross-site Vercel mirror in production
+        mock_req = MagicMock()
+        mock_req.headers = {"origin": mirror_origin}
+        orig_prod = main.IS_PRODUCTION
+        main.IS_PRODUCTION = True
+        try:
+            samesite = main.get_cookie_samesite(mock_req)
+            self.assertEqual(samesite, "none")
+        finally:
+            main.IS_PRODUCTION = orig_prod
+
+        # Dual auth fallback via Bearer header works independently of cross-site cookies
+        token = create_access_token({"sub": "fallback_tenant@cyphr.io"})
+        with patch('main.users_collection.find_one', new_callable=AsyncMock) as mock_find:
+            mock_find.return_value = {"email": "fallback_tenant@cyphr.io", "fullname": "Fallback Tenant"}
+            client.cookies.clear()
+            res = client.get('/api/me', headers={'Authorization': f'Bearer {token}', 'Origin': mirror_origin})
+            self.assertEqual(res.status_code, 200)
+            self.assertEqual(res.json()['user']['email'], "fallback_tenant@cyphr.io")
+
 
 if __name__ == '__main__':
 

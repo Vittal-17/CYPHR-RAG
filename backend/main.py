@@ -1,5 +1,5 @@
 import config
-from fastapi import FastAPI, UploadFile, File, HTTPException, Response, Depends, Cookie
+from fastapi import FastAPI, UploadFile, File, HTTPException, Response, Depends, Cookie, Header
 from fastapi.middleware.cors import CORSMiddleware
 from database import check_db_connection, users_collection, chats_collection, collection
 from llm_providers import get_public_provider_catalog
@@ -7,6 +7,7 @@ from services import process_and_store_document, generate_chat_response, generat
 from auth import get_password_hash, verify_password, create_access_token, decode_access_token
 import uvicorn
 import uuid
+import re
 from pydantic import BaseModel, EmailStr
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -37,6 +38,10 @@ RATE_LIMIT_GENERAL = os.getenv("RATE_LIMIT_GENERAL", "100/minute")
 
 def dynamic_key_func(request: Request):
     token = request.cookies.get("access_token")
+    if not token:
+        auth_header = request.headers.get("authorization") or request.headers.get("Authorization") or ""
+        if auth_header.lower().startswith("bearer "):
+            token = auth_header[7:].strip()
     if token:
         try:
             from auth import decode_access_token
@@ -133,6 +138,83 @@ if not FRONTEND_URL:
 FRONTEND_URL = FRONTEND_URL.rstrip('/')
 ALLOWED_ORIGIN = FRONTEND_URL
 
+from urllib.parse import urlparse
+
+VERCEL_PROJECT_NAME = os.getenv("VERCEL_PROJECT_NAME", "cyphr-rag").strip()
+_escaped_vercel_project = re.escape(VERCEL_PROJECT_NAME)
+VERCEL_ORIGIN_REGEX = re.compile(rf"^https://({_escaped_vercel_project}|{_escaped_vercel_project}-[a-zA-Z0-9_\-]+)\.vercel\.app$")
+
+def _extract_hostname(origin_or_referer: str) -> str:
+    if not origin_or_referer:
+        return ""
+    try:
+        parsed = urlparse(origin_or_referer)
+        return (parsed.hostname or "").lower()
+    except Exception:
+        return ""
+
+def get_cookie_samesite(request: Request | None = None) -> str:
+    """
+    Dynamically determine cookie SameSite policy:
+    - If request comes from cyphr.cfd (apex or subdomains): returns 'lax' (same-site, immune to 3rd-party cookie blocking).
+    - If request comes from localhost / local dev / not production: returns 'lax' (or explicit override).
+    - If request comes from configured *.vercel.app (or external production origin): returns 'none'.
+    - If COOKIE_SAMESITE is explicitly configured to 'strict' or modified by tests, preserve it.
+    """
+    if COOKIE_SAMESITE == "strict":
+        return "strict"
+    if request:
+        origin = request.headers.get("origin") or request.headers.get("referer") or ""
+        host = _extract_hostname(origin)
+        if host == "cyphr.cfd" or host.endswith(".cyphr.cfd"):
+            return "lax"
+        if host in ("localhost", "127.0.0.1") or not IS_PRODUCTION:
+            return COOKIE_SAMESITE
+        return "none"
+    return COOKIE_SAMESITE
+
+def get_allowed_origins() -> list[str]:
+    origins = {
+        ALLOWED_ORIGIN,
+        "https://cyphr.cfd",
+        "https://www.cyphr.cfd",
+        "http://localhost:5173",
+        "http://localhost:3000",
+        "http://localhost:8000",
+        "http://localhost",
+        "http://127.0.0.1:5173",
+        "http://127.0.0.1:8000",
+        "http://127.0.0.1",
+    }
+    if not IS_PRODUCTION:
+        origins.update({
+            "http://cyphr.cfd",
+            "http://www.cyphr.cfd",
+        })
+    addl = os.getenv("ADDITIONAL_ALLOWED_ORIGINS")
+    if addl:
+        for o in addl.split(","):
+            clean_o = o.strip().rstrip("/")
+            if clean_o:
+                # In production, block insecure unencrypted HTTP origins for remote hosts
+                if IS_PRODUCTION and not clean_o.startswith("https://"):
+                    parsed = urlparse(clean_o)
+                    if parsed.hostname not in ("localhost", "127.0.0.1"):
+                        logger.warning("Ignoring insecure plaintext HTTP origin in production: %s", clean_o)
+                        continue
+                origins.add(clean_o)
+    return [o.rstrip("/") for o in origins if o]
+
+def is_origin_allowed(origin: str | None) -> bool:
+    if not origin:
+        return False
+    clean_origin = origin.rstrip("/")
+    if clean_origin == ALLOWED_ORIGIN or clean_origin in get_allowed_origins():
+        return True
+    if VERCEL_ORIGIN_REGEX.match(clean_origin):
+        return True
+    return False
+
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 import secrets
@@ -146,26 +228,34 @@ class CSRFMiddleware(BaseHTTPMiddleware):
         if request.method in ["POST", "PUT", "PATCH", "DELETE"]:
             origin = request.headers.get("origin")
             origin = origin.rstrip('/') if origin else origin
-            if origin and origin != ALLOWED_ORIGIN:
+            if origin and not is_origin_allowed(origin):
                 logger.warning("CSRF validation failed: invalid origin")
                 return JSONResponse(status_code=403, content={"detail": "CSRF validation failed."})
 
             csrf_cookie = request.cookies.get("csrf_token")
             csrf_header = request.headers.get("x-csrf-token")
 
-            if not csrf_cookie:
-                logger.warning("CSRF validation failed: missing cookie")
-                return JSONResponse(status_code=403, content={"detail": "CSRF validation failed."})
-            if not csrf_header:
-                logger.warning("CSRF validation failed: missing header")
-                return JSONResponse(status_code=403, content={"detail": "CSRF validation failed."})
-            if not hmac.compare_digest(csrf_cookie, csrf_header):
-                logger.warning(
-                    "CSRF validation failed: token length mismatch (cookie=%d, header=%d)",
-                    len(csrf_cookie),
-                    len(csrf_header),
-                )
-                return JSONResponse(status_code=403, content={"detail": "CSRF validation failed."})
+            # Check if this request is using Bearer token without any cookies (fallback mirror mode)
+            auth_header = request.headers.get("authorization") or request.headers.get("Authorization") or ""
+            has_bearer = bool(auth_header.lower().startswith("bearer "))
+            has_cookies = bool(request.cookies.get("access_token") or csrf_cookie)
+
+            # If request relies on cookies (standard mode) or does not have a Bearer token:
+            # strictly enforce double-submit CSRF cookie + header check.
+            if has_cookies or not has_bearer:
+                if not csrf_cookie:
+                    logger.warning("CSRF validation failed: missing cookie")
+                    return JSONResponse(status_code=403, content={"detail": "CSRF validation failed."})
+                if not csrf_header:
+                    logger.warning("CSRF validation failed: missing header")
+                    return JSONResponse(status_code=403, content={"detail": "CSRF validation failed."})
+                if not hmac.compare_digest(csrf_cookie, csrf_header):
+                    logger.warning(
+                        "CSRF validation failed: token length mismatch (cookie=%d, header=%d)",
+                        len(csrf_cookie),
+                        len(csrf_header),
+                    )
+                    return JSONResponse(status_code=403, content={"detail": "CSRF validation failed."})
 
         csrf_token = request.cookies.get("csrf_token")
         is_new_token = False
@@ -177,12 +267,14 @@ class CSRFMiddleware(BaseHTTPMiddleware):
         response = await call_next(request)
 
         if is_new_token:
+            samesite = get_cookie_samesite(request)
+            secure_flag = IS_PRODUCTION or (samesite == "none")
             response.set_cookie(
                 key="csrf_token",
                 value=csrf_token,
                 httponly=False,
-                samesite=COOKIE_SAMESITE,
-                secure=IS_PRODUCTION,
+                samesite=samesite,
+                secure=secure_flag,
             )
 
         return response
@@ -203,7 +295,8 @@ app.add_middleware(SecurityHeadersMiddleware)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[ALLOWED_ORIGIN],
+    allow_origins=get_allowed_origins(),
+    allow_origin_regex=VERCEL_ORIGIN_REGEX.pattern,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -234,10 +327,29 @@ class ChatRequest(BaseModel):
 async def get_csrf(request: Request):
     return {"message": "CSRF cookie set", "csrf_token": request.state.csrf_token}
 
-async def get_current_user(access_token: str | None = Cookie(None)):
-    if not access_token:
+async def get_current_user(
+    access_token: str | None = Cookie(None),
+    authorization: str | None = Header(None)
+):
+    token = access_token
+    token_from_header = None
+    if authorization:
+        parts = authorization.split()
+        if len(parts) == 2 and parts[0].lower() == "bearer":
+            token_from_header = parts[1]
+
+    if not token:
+        token = token_from_header
+
+    if not token:
         raise HTTPException(status_code=401, detail="Not authenticated")
-    payload = decode_access_token(access_token)
+
+    payload = decode_access_token(token)
+    # If cookie was present but expired/invalid, try the Bearer header fallback if available
+    if not payload and access_token and token_from_header:
+        token = token_from_header
+        payload = decode_access_token(token)
+
     if not payload:
         raise HTTPException(status_code=401, detail="Invalid token")
     email = payload.get("sub")
@@ -270,15 +382,22 @@ async def register(request: Request, body_req: RegisterRequest, response: Respon
 
     access_token = create_access_token(data={"sub": request.email})
     from auth import ACCESS_TOKEN_EXPIRE_MINUTES
+    samesite = get_cookie_samesite(request_obj)
+    secure_flag = IS_PRODUCTION or (samesite == "none")
     response.set_cookie(
         key="access_token",
         value=access_token,
         httponly=True,
-        samesite=COOKIE_SAMESITE,
-        secure=IS_PRODUCTION,
+        samesite=samesite,
+        secure=secure_flag,
         max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60
     )
-    return {"message": "User registered successfully", "user": {"email": request.email, "fullname": request.fullname}}
+    return {
+        "message": "User registered successfully",
+        "user": {"email": request.email, "fullname": request.fullname},
+        "access": access_token,
+        "access_token": access_token
+    }
 
 @app.post("/api/login")
 @limiter.limit(RATE_LIMIT_LOGIN)
@@ -297,15 +416,22 @@ async def login(request: Request, body_req: LoginRequest, response: Response):
 
     access_token = create_access_token(data={"sub": request.email})
     from auth import ACCESS_TOKEN_EXPIRE_MINUTES
+    samesite = get_cookie_samesite(request_obj)
+    secure_flag = IS_PRODUCTION or (samesite == "none")
     response.set_cookie(
         key="access_token",
         value=access_token,
         httponly=True,
-        samesite=COOKIE_SAMESITE,
-        secure=IS_PRODUCTION,
+        samesite=samesite,
+        secure=secure_flag,
         max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60
     )
-    return {"message": "Login successful", "user": {"email": user["email"], "fullname": user["fullname"]}}
+    return {
+        "message": "Login successful",
+        "user": {"email": user["email"], "fullname": user["fullname"]},
+        "access": access_token,
+        "access_token": access_token
+    }
 
 @app.post("/api/auth/google")
 @limiter.limit(RATE_LIMIT_GOOGLE)
@@ -332,15 +458,22 @@ async def google_auth(request: Request, body_req: GoogleAuthRequest, response: R
 
         access_token = create_access_token(data={"sub": email})
         from auth import ACCESS_TOKEN_EXPIRE_MINUTES
+        samesite = get_cookie_samesite(request_obj)
+        secure_flag = IS_PRODUCTION or (samesite == "none")
         response.set_cookie(
             key="access_token",
             value=access_token,
             httponly=True,
-            samesite=COOKIE_SAMESITE,
-            secure=IS_PRODUCTION,
+            samesite=samesite,
+            secure=secure_flag,
             max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60
         )
-        return {"message": "Login successful", "user": {"email": email, "fullname": name}}
+        return {
+            "message": "Login successful",
+            "user": {"email": email, "fullname": name},
+            "access": access_token,
+            "access_token": access_token
+        }
     except ValueError as e:
         logger.warning("GOOGLE VERIFY ERROR: Invalid Google token")
         raise HTTPException(status_code=401, detail="Invalid Google token")
@@ -350,17 +483,19 @@ async def google_auth(request: Request, body_req: GoogleAuthRequest, response: R
 @app.get("/api/auth/github/login")
 async def github_login(request: Request, response: Response):
     state = secrets.token_urlsafe(16)
-    
+
     # We will set a short-lived cookie for the state
+    samesite = get_cookie_samesite(request)
+    secure_flag = IS_PRODUCTION or (samesite == "none")
     response.set_cookie(
         key="github_oauth_state",
         value=state,
         httponly=True,
-        samesite=COOKIE_SAMESITE,
-        secure=IS_PRODUCTION,
+        samesite=samesite,
+        secure=secure_flag,
         max_age=300
     )
-    
+
     params = {
         "client_id": GITHUB_CLIENT_ID,
         "state": state,
@@ -375,8 +510,10 @@ async def github_callback(request: Request, response: Response, code: str, state
     cookie_state = request.cookies.get("github_oauth_state")
     if not cookie_state or cookie_state != state:
         logger.warning("GITHUB OAUTH ERROR: Invalid state parameter")
-        return RedirectResponse(url=f"{FRONTEND_URL}/login?error=Invalid+state")
-    
+        err_res = RedirectResponse(url=f"{FRONTEND_URL}/login?error=Invalid+state")
+        err_res.delete_cookie("github_oauth_state")
+        return err_res
+
     # Exchange code for token
     async with httpx.AsyncClient() as client:
         token_response = await client.post(
@@ -392,11 +529,13 @@ async def github_callback(request: Request, response: Response, code: str, state
         )
         token_data = token_response.json()
         access_token = token_data.get("access_token")
-        
+
         if not access_token:
             logger.warning("GITHUB OAUTH ERROR: Failed to get access token")
-            return RedirectResponse(url=f"{FRONTEND_URL}/login?error=Authentication+failed")
-            
+            err_res = RedirectResponse(url=f"{FRONTEND_URL}/login?error=Authentication+failed")
+            err_res.delete_cookie("github_oauth_state")
+            return err_res
+
         # Get user profile
         user_response = await client.get(
             "https://api.github.com/user",
@@ -404,10 +543,10 @@ async def github_callback(request: Request, response: Response, code: str, state
             timeout=10.0
         )
         user_data = user_response.json()
-        
+
         name = user_data.get("name") or user_data.get("login") or "GitHub User"
         email = user_data.get("email")
-        
+
         # If email is private, we must fetch from /user/emails
         if not email:
             emails_response = await client.get(
@@ -426,11 +565,13 @@ async def github_callback(request: Request, response: Response, code: str, state
                     if e.get("verified"):
                         email = e.get("email")
                         break
-        
+
         if not email:
             logger.warning("GITHUB OAUTH ERROR: No verified email found")
-            return RedirectResponse(url=f"{FRONTEND_URL}/login?error=No+verified+email")
-            
+            err_res = RedirectResponse(url=f"{FRONTEND_URL}/login?error=No+verified+email")
+            err_res.delete_cookie("github_oauth_state")
+            return err_res
+
         # Find or create CYPHR user
         user = await users_collection.find_one({"email": email})
         if not user:
@@ -441,28 +582,33 @@ async def github_callback(request: Request, response: Response, code: str, state
                 "auth_provider": "github"
             }
             await users_collection.insert_one(user_doc)
-            
+
         # Create JWT and set cookie
         from auth import ACCESS_TOKEN_EXPIRE_MINUTES, create_access_token
         jwt_token = create_access_token(data={"sub": email})
-        
-        redirect_url = FRONTEND_URL
+
+        redirect_url = f"{FRONTEND_URL}/#token={jwt_token}"
         redirect_response = RedirectResponse(url=redirect_url)
+        samesite = get_cookie_samesite(request)
+        secure_flag = IS_PRODUCTION or (samesite == "none")
         redirect_response.set_cookie(
             key="access_token",
             value=jwt_token,
             httponly=True,
-            samesite=COOKIE_SAMESITE,
-            secure=IS_PRODUCTION,
+            samesite=samesite,
+            secure=secure_flag,
             max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60
         )
+        redirect_response.delete_cookie("github_oauth_state")
         return redirect_response
 
 @app.post("/api/logout")
 @limiter.limit(RATE_LIMIT_GENERAL)
 async def logout(request: Request, response: Response):
+    samesite = get_cookie_samesite(request)
+    secure_flag = IS_PRODUCTION or (samesite == "none")
     response.delete_cookie(
-        "access_token", httponly=True, samesite=COOKIE_SAMESITE, secure=IS_PRODUCTION
+        "access_token", httponly=True, samesite=samesite, secure=secure_flag
     )
     return {"message": "Logged out successfully"}
 

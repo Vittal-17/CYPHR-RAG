@@ -13,6 +13,7 @@ import useProviders from './hooks/useProviders';
 import { groupChatsByRecency, pluralize } from './lib/format';
 import { errorDetail } from './lib/errors';
 import { withAuthDelay } from './utils/authDelay';
+import { getAccessToken, setAccessToken, clearAccessToken } from './utils/token';
 
 /** The persistent rail needs real room; below this the nav becomes a drawer. */
 const DESKTOP_QUERY = '(min-width: 1024px)';
@@ -72,12 +73,54 @@ function App() {
     let active = true;
     const bootstrap = async () => {
       try {
+        let urlToken = null;
+
+        // 1. Check secure client-side hash fragment (#token=...)
+        if (window.location.hash) {
+          const rawHash = window.location.hash.startsWith('#')
+            ? window.location.hash.substring(1)
+            : window.location.hash;
+          const hashParams = new URLSearchParams(rawHash);
+          if (hashParams.has('token')) {
+            urlToken = hashParams.get('token');
+            hashParams.delete('token');
+            const remainingHash = hashParams.toString();
+            const cleanUrl =
+              window.location.pathname +
+              window.location.search +
+              (remainingHash ? `#${remainingHash}` : '');
+            window.history.replaceState({}, document.title, cleanUrl);
+          }
+        }
+
+        // 2. Fallback to query parameter (?token=...) for backward compatibility
+        if (!urlToken && window.location.search) {
+          const searchParams = new URLSearchParams(window.location.search);
+          if (searchParams.has('token')) {
+            urlToken = searchParams.get('token');
+            searchParams.delete('token');
+            const remainingQuery = searchParams.toString();
+            const cleanUrl =
+              window.location.pathname +
+              (remainingQuery ? `?${remainingQuery}` : '') +
+              window.location.hash;
+            window.history.replaceState({}, document.title, cleanUrl);
+          }
+        }
+
+        if (urlToken) {
+          setAccessToken(urlToken);
+        }
+
         const res = await axios.get('/api/me');
         if (!active) return;
         setUser(res.data.user);
         await loadUserData();
       } catch {
-        if (active) setUser(null);
+        if (active) {
+          clearAccessToken();
+          setUser(null);
+        }
       }
     };
 
@@ -117,6 +160,7 @@ function App() {
     try {
       setIsLoggingOut(true);
       await withAuthDelay(() => axios.post('/api/logout'));
+      clearAccessToken();
       setUser(null);
       setChats([]);
       setActiveChatId(null);
@@ -125,6 +169,7 @@ function App() {
       setMobileNavOpen(false);
       toast.success('Signed out');
     } catch (error) {
+      clearAccessToken();
       toast.error(errorDetail(error, 'Sign out failed.'));
     } finally {
       setIsLoggingOut(false);
