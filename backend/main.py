@@ -481,8 +481,17 @@ async def google_auth(request: Request, body_req: GoogleAuthRequest, response: R
 
 
 @app.get("/api/auth/github/login")
-async def github_login(request: Request, response: Response):
+async def github_login(request: Request):
     state = secrets.token_urlsafe(16)
+
+    params = {
+        "client_id": GITHUB_CLIENT_ID,
+        "state": state,
+        "scope": "user:email"
+    }
+    url = f"https://github.com/login/oauth/authorize?{urlencode(params)}"
+
+    response = RedirectResponse(url=url)
 
     # We will set a short-lived cookie for the state
     samesite = get_cookie_samesite(request)
@@ -496,13 +505,7 @@ async def github_login(request: Request, response: Response):
         max_age=300
     )
 
-    params = {
-        "client_id": GITHUB_CLIENT_ID,
-        "state": state,
-        "scope": "user:email"
-    }
-    url = f"https://github.com/login/oauth/authorize?{urlencode(params)}"
-    return {"url": url} # Return JSON so frontend can redirect
+    return response
 
 @app.get("/api/auth/github/callback")
 async def github_callback(request: Request, response: Response, code: str, state: str):
