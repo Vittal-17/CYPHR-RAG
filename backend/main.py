@@ -287,6 +287,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        response.headers["Cross-Origin-Opener-Policy"] = "same-origin-allow-popups"
         if IS_PRODUCTION:
             response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
         return response
