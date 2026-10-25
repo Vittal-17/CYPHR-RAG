@@ -943,32 +943,40 @@ print(main.IS_PRODUCTION)
             response2 = client.post('/api/logout', headers={'X-CSRF-Token': cookie_token, 'Origin': 'http://localhost:5173'})
         self.assertEqual(response2.status_code, 200)
 
+    @patch('httpx.AsyncClient.post')
     @patch('main.id_token.verify_oauth2_token')
     @patch('main.users_collection.find_one')
     @patch('main.users_collection.insert_one')
-    def test_36_google_auth_email_verified(self, mock_insert, mock_find, mock_verify):
+    def test_36_google_auth_email_verified(self, mock_insert, mock_find, mock_verify, mock_post):
         async def mock_none(*args, **kwargs): return None
         mock_find.side_effect = mock_none
         mock_insert.side_effect = mock_none
 
+        class MockResponse:
+            def json(self): return {"id_token": "fake_id_token"}
+
+        mock_post.return_value = MockResponse()
+
         # Unverified email
         mock_verify.return_value = {"email": "test@example.com", "name": "Test", "email_verified": False}
-        with temporary_cookies(client, {'csrf_token': 'a'}):
-            response = client.post('/api/auth/google', json={"credential": "fake"}, headers={'Origin': 'http://localhost:5173', 'X-CSRF-Token': 'a'})
-        self.assertEqual(response.status_code, 401)
-        self.assertEqual(response.json()["detail"], "Invalid Google token")
+        with temporary_cookies(client, {'google_oauth_state': 'valid_state'}):
+            response = client.get('/api/auth/google/callback?code=mock_code&state=valid_state', headers={'Origin': 'http://localhost:5173'}, follow_redirects=False)
+        self.assertEqual(response.status_code, 307)
+        self.assertIn("error=No+verified+email", response.headers["Location"])
 
         # Missing email_verified
         mock_verify.return_value = {"email": "test@example.com", "name": "Test"}
-        with temporary_cookies(client, {'csrf_token': 'a'}):
-            response2 = client.post('/api/auth/google', json={"credential": "fake"}, headers={'Origin': 'http://localhost:5173', 'X-CSRF-Token': 'a'})
-        self.assertEqual(response2.status_code, 401)
+        with temporary_cookies(client, {'google_oauth_state': 'valid_state'}):
+            response2 = client.get('/api/auth/google/callback?code=mock_code&state=valid_state', headers={'Origin': 'http://localhost:5173'}, follow_redirects=False)
+        self.assertEqual(response2.status_code, 307)
+        self.assertIn("error=No+verified+email", response2.headers["Location"])
 
         # Verified email
         mock_verify.return_value = {"email": "test@example.com", "name": "Test", "email_verified": True}
-        with temporary_cookies(client, {'csrf_token': 'a'}):
-            response3 = client.post('/api/auth/google', json={"credential": "fake"}, headers={'Origin': 'http://localhost:5173', 'X-CSRF-Token': 'a'})
-        self.assertEqual(response3.status_code, 200)
+        with temporary_cookies(client, {'google_oauth_state': 'valid_state'}):
+            response3 = client.get('/api/auth/google/callback?code=mock_code&state=valid_state', headers={'Origin': 'http://localhost:5173'}, follow_redirects=False)
+        self.assertEqual(response3.status_code, 307)
+        self.assertIn("token=", response3.headers["Location"])
 
     @patch('main.verify_password')
     @patch('main.users_collection.find_one')
@@ -2998,6 +3006,19 @@ class TestDynamicDualAuthAndMultiDomain(unittest.IsolatedAsyncioTestCase):
         self.assertIn('/login?error=Invalid+state', response.headers.get('location', ''))
         set_cookies = response.headers.get_list('set-cookie')
         state_cookie = next((c for c in set_cookies if c.startswith('github_oauth_state=')), None)
+        self.assertIsNotNone(state_cookie)
+        self.assertTrue('max-age=0' in state_cookie.lower() or 'expires=' in state_cookie.lower())
+
+    def test_google_oauth_invalid_state_evicts_cookie(self):
+        with temporary_cookies(client, {'google_oauth_state': 'expected_state'}):
+            response = client.get(
+                '/api/auth/google/callback?code=mock_code&state=tampered_state',
+                follow_redirects=False
+            )
+        self.assertEqual(response.status_code, 307)
+        self.assertIn('/login?error=Invalid+state', response.headers.get('location', ''))
+        set_cookies = response.headers.get_list('set-cookie')
+        state_cookie = next((c for c in set_cookies if c.startswith('google_oauth_state=')), None)
         self.assertIsNotNone(state_cookie)
         self.assertTrue('max-age=0' in state_cookie.lower() or 'expires=' in state_cookie.lower())
 
