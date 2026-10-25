@@ -156,23 +156,10 @@ const AuthScreen = ({ onAuthSuccess }) => {
       isLogin ? 'Those credentials were not accepted.' : 'That account could not be created.'
     );
   };
-  const handleGithubLogin = async () => {
-    try {
-      setLoading(true);
-      setError(null);
-
-      const res = await axios.get('/api/auth/github/login');
-
-      if (res.data?.url) {
-        window.location.href = res.data.url;
-        return;
-      }
-
-      throw new Error('GitHub authorization URL was not returned.');
-    } catch (err) {
-      setError(errorDetail(err, 'GitHub sign-in could not be initiated.'));
-      setLoading(false);
-    }
+  const handleGithubLogin = () => {
+    setLoading(true);
+    setError(null);
+    window.location.href = `${axios.defaults.baseURL || ''}/api/auth/github/login`;
   };
   const handleGoogle = (credentialResponse) => {
     const credential = credentialResponse?.credential;
@@ -406,6 +393,7 @@ const AuthScreen = ({ onAuthSuccess }) => {
                     shape="rectangular"
                     width="240"
                     text={isLogin ? 'signin_with' : 'signup_with'}
+                    use_fedcm_for_prompt={true}
                   />
                 </div>
                 <button
