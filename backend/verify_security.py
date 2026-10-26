@@ -943,6 +943,7 @@ print(main.IS_PRODUCTION)
             response2 = client.post('/api/logout', headers={'X-CSRF-Token': cookie_token, 'Origin': 'http://localhost:5173'})
         self.assertEqual(response2.status_code, 200)
 
+    @patch('main.GOOGLE_CLIENT_SECRET', 'mock_google_client_secret')
     @patch('httpx.AsyncClient.post')
     @patch('main.id_token.verify_oauth2_token')
     @patch('main.users_collection.find_one')
@@ -3058,6 +3059,98 @@ class TestDynamicDualAuthAndMultiDomain(unittest.IsolatedAsyncioTestCase):
         state_cookie = next((c for c in set_cookies if c.startswith('github_oauth_state=')), None)
         self.assertIsNotNone(state_cookie)
         self.assertTrue('max-age=0' in state_cookie.lower() or 'expires=' in state_cookie.lower())
+
+    def test_google_login_canonical_redirect_uri_and_cookies(self):
+        response = client.get('/api/auth/google/login', follow_redirects=False)
+        self.assertEqual(response.status_code, 307)
+        location = response.headers.get('location', '')
+        self.assertIn('https://accounts.google.com/o/oauth2/v2/auth', location)
+        from urllib.parse import urlparse, parse_qs
+        parsed = urlparse(location)
+        qs = parse_qs(parsed.query)
+        self.assertIn('redirect_uri', qs)
+        # Should be deterministic backend callback URL
+        self.assertTrue(qs['redirect_uri'][0].endswith('/api/auth/google/callback'))
+        self.assertIn('state', qs)
+        set_cookies = response.headers.get_list('set-cookie')
+        state_cookie = next((c for c in set_cookies if c.startswith('google_oauth_state=')), None)
+        return_cookie = next((c for c in set_cookies if c.startswith('google_oauth_return_to=')), None)
+        self.assertIsNotNone(state_cookie)
+        self.assertIsNotNone(return_cookie)
+
+    def test_google_login_open_redirect_rejected(self):
+        # Attacker tries to pass an untrusted domain in return_to
+        response = client.get('/api/auth/google/login?return_to=https://evil-attacker.com', follow_redirects=False)
+        self.assertEqual(response.status_code, 307)
+        set_cookies = response.headers.get_list('set-cookie')
+        return_cookie = next((c for c in set_cookies if c.startswith('google_oauth_return_to=')), None)
+        self.assertIsNotNone(return_cookie)
+        # Must NOT be evil-attacker.com, must safely fall back to FRONTEND_URL
+        self.assertNotIn('evil-attacker.com', return_cookie)
+        self.assertIn('localhost:5173', return_cookie)
+
+    def test_google_login_allowed_mirror_return_to(self):
+        # Legitimate 1-year fallback mirror origin
+        response = client.get('/api/auth/google/login?return_to=https://cyphr-rag.vercel.app', follow_redirects=False)
+        self.assertEqual(response.status_code, 307)
+        set_cookies = response.headers.get_list('set-cookie')
+        return_cookie = next((c for c in set_cookies if c.startswith('google_oauth_return_to=')), None)
+        self.assertIsNotNone(return_cookie)
+        self.assertIn('https://cyphr-rag.vercel.app', return_cookie)
+
+    @patch('main.GOOGLE_CLIENT_SECRET', None)
+    def test_google_callback_missing_secret_returns_error(self):
+        with temporary_cookies(client, {'google_oauth_state': 'valid_state'}):
+            response = client.get(
+                '/api/auth/google/callback?code=mock_code&state=valid_state',
+                follow_redirects=False
+            )
+        self.assertEqual(response.status_code, 307)
+        self.assertIn('error=Authentication+failed+-+server+misconfigured', response.headers.get('location', ''))
+
+    @patch('main.GOOGLE_CLIENT_SECRET', 'test_secret')
+    @patch('httpx.AsyncClient.post')
+    @patch('main.id_token.verify_oauth2_token')
+    @patch('main.users_collection.find_one', new_callable=AsyncMock)
+    @patch('main.users_collection.insert_one', new_callable=AsyncMock)
+    def test_google_oauth_success_multi_domain_hash_token(
+        self, mock_insert, mock_find, mock_verify, mock_http_post
+    ):
+        mock_find.return_value = {"email": "google_user@test.com", "fullname": "Google User"}
+        mock_token_resp = MagicMock()
+        mock_token_resp.json.return_value = {"id_token": "valid_mock_id_token"}
+        mock_http_post.return_value = mock_token_resp
+        mock_verify.return_value = {"email": "google_user@test.com", "name": "Google User", "email_verified": True}
+
+        cookies = {
+            'google_oauth_state': 'valid_state',
+            'google_oauth_return_to': 'https://cyphr-rag.vercel.app'
+        }
+        with temporary_cookies(client, cookies):
+            response = client.get(
+                '/api/auth/google/callback?code=good_code&state=valid_state',
+                follow_redirects=False
+            )
+
+        self.assertEqual(response.status_code, 307)
+        location = response.headers.get('location', '')
+        self.assertTrue(location.startswith('https://cyphr-rag.vercel.app/#token='))
+        set_cookies = response.headers.get_list('set-cookie')
+        state_cookie = next((c for c in set_cookies if c.startswith('google_oauth_state=')), None)
+        self.assertIsNotNone(state_cookie)
+        self.assertTrue('max-age=0' in state_cookie.lower() or 'expires=' in state_cookie.lower())
+
+    def test_github_login_canonical_redirect_uri_and_open_redirect(self):
+        # Open redirect attempt rejected
+        response = client.get('/api/auth/github/login?return_to=https://attacker-site.com', follow_redirects=False)
+        self.assertEqual(response.status_code, 307)
+        location = response.headers.get('location', '')
+        self.assertIn('https://github.com/login/oauth/authorize', location)
+        set_cookies = response.headers.get_list('set-cookie')
+        return_cookie = next((c for c in set_cookies if c.startswith('github_oauth_return_to=')), None)
+        self.assertIsNotNone(return_cookie)
+        self.assertNotIn('attacker-site.com', return_cookie)
+        self.assertIn('localhost:5173', return_cookie)
 
     @patch("services.collection")
     @patch("embeddings.JinaEmbeddingProvider.embed_query", new_callable=AsyncMock)

@@ -84,8 +84,12 @@ const AuthScreen = ({ onAuthSuccess }) => {
   // become a new account's password.
 
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const err = params.get('error');
+    const searchParams = new URLSearchParams(window.location.search);
+    let err = searchParams.get('error');
+    if (!err && window.location.hash) {
+      const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ''));
+      err = hashParams.get('error');
+    }
     if (err) {
       setError(err.replace(/\+/g, ' '));
       window.history.replaceState({}, document.title, window.location.pathname);
@@ -158,16 +162,16 @@ const AuthScreen = ({ onAuthSuccess }) => {
   const handleGithubLogin = () => {
     setLoading(true);
     setError(null);
-    const backendUrl = axios.defaults.baseURL || window.location.origin;
-    const redirectUri = encodeURIComponent(`${backendUrl}/api/auth/github/callback`);
-    window.location.href = `${backendUrl}/api/auth/github/login?redirect_uri=${redirectUri}`;
+    const backendUrl = axios.defaults.baseURL || '';
+    const returnTo = encodeURIComponent(window.location.origin);
+    window.location.href = `${backendUrl}/api/auth/github/login?return_to=${returnTo}`;
   };
   const handleGoogleLogin = () => {
     setLoading(true);
     setError(null);
-    const backendUrl = axios.defaults.baseURL || window.location.origin;
-    const redirectUri = encodeURIComponent(`${backendUrl}/api/auth/google/callback`);
-    window.location.href = `${backendUrl}/api/auth/google/login?redirect_uri=${redirectUri}`;
+    const backendUrl = axios.defaults.baseURL || '';
+    const returnTo = encodeURIComponent(window.location.origin);
+    window.location.href = `${backendUrl}/api/auth/google/login?return_to=${returnTo}`;
   };
 
   return (

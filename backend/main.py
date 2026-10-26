@@ -93,6 +93,16 @@ def custom_rate_limit_handler(request: Request, exc: RateLimitExceeded) -> Respo
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await check_db_connection()
+    if IS_PRODUCTION:
+        if GOOGLE_CLIENT_ID and not GOOGLE_CLIENT_SECRET:
+            logger.error("FATAL: GOOGLE_CLIENT_SECRET is missing in production environment!")
+            raise ValueError("FATAL: GOOGLE_CLIENT_SECRET must be configured when GOOGLE_CLIENT_ID is set in production.")
+        if GITHUB_CLIENT_ID and not GITHUB_CLIENT_SECRET:
+            logger.error("FATAL: GITHUB_CLIENT_SECRET is missing in production environment!")
+            raise ValueError("FATAL: GITHUB_CLIENT_SECRET must be configured when GITHUB_CLIENT_ID is set in production.")
+    else:
+        if GOOGLE_CLIENT_ID and not GOOGLE_CLIENT_SECRET:
+            logger.warning("WARNING: GOOGLE_CLIENT_SECRET is not set. Google OAuth code exchange will fail until added to .env.")
     yield
     from embeddings import close_embedding_provider
     await close_embedding_provider()
@@ -119,6 +129,9 @@ GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
 GITHUB_CLIENT_ID = os.getenv("GITHUB_CLIENT_ID")
 GITHUB_CLIENT_SECRET = os.getenv("GITHUB_CLIENT_SECRET")
+BACKEND_URL = os.getenv("BACKEND_URL")
+if BACKEND_URL:
+    BACKEND_URL = BACKEND_URL.rstrip('/')
 
 
 if IS_PRODUCTION:
@@ -215,6 +228,49 @@ def is_origin_allowed(origin: str | None) -> bool:
     if VERCEL_ORIGIN_REGEX.match(clean_origin):
         return True
     return False
+
+def get_canonical_backend_url(request: Request) -> str:
+    """
+    Returns the deterministic base URL for backend OAuth callback endpoints.
+    Priority:
+    1. BACKEND_URL environment variable if configured.
+    2. Derived safely from x-forwarded-proto and x-forwarded-host headers (or request.url).
+       In production, unencrypted http:// is upgraded to https:// unless localhost.
+    """
+    if BACKEND_URL:
+        return BACKEND_URL
+    scheme = request.headers.get("x-forwarded-proto", request.url.scheme)
+    host = request.headers.get("x-forwarded-host", request.url.netloc)
+    if IS_PRODUCTION and scheme == "http":
+        h_name = (host.split(":")[0] if host else "").lower()
+        if h_name not in ("localhost", "127.0.0.1"):
+            scheme = "https"
+    return f"{scheme}://{host}".rstrip('/')
+
+def resolve_frontend_return_url(request: Request, return_to: str | None = None) -> str:
+    """
+    Safely resolves the frontend return URL for OAuth redirects.
+    Strictly validates against allowed origins to prevent Open Redirect vulnerabilities.
+    Falls back safely to FRONTEND_URL.
+    """
+    if return_to:
+        clean_return = return_to.strip().rstrip('/')
+        if is_origin_allowed(clean_return):
+            return clean_return
+        logger.warning("Untrusted return_to origin rejected: %s. Falling back to FRONTEND_URL.", clean_return)
+
+    # Check origin/referer header
+    origin_hdr = request.headers.get("origin") or request.headers.get("referer") or ""
+    if origin_hdr:
+        try:
+            parsed = urlparse(origin_hdr)
+            candidate = f"{parsed.scheme}://{parsed.netloc}".rstrip('/')
+            if is_origin_allowed(candidate):
+                return candidate
+        except Exception:
+            pass
+
+    return FRONTEND_URL
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
@@ -436,33 +492,23 @@ async def login(request: Request, body_req: LoginRequest, response: Response):
     }
 
 @app.get("/api/auth/google/login")
-async def google_login(request: Request, redirect_uri: str = None):
+async def google_login(request: Request, return_to: str = None, redirect_uri: str = None):
     state = secrets.token_urlsafe(16)
-
-    if not redirect_uri:
-        scheme = request.headers.get("x-forwarded-proto", request.url.scheme)
-        host = request.headers.get("x-forwarded-host", request.url.netloc)
-        redirect_uri = f"{scheme}://{host}/api/auth/google/callback"
-    else:
-        # Validate redirect URI to prevent Open Redirect
-        parsed = urlparse(redirect_uri)
-        if not parsed.path.endswith("/api/auth/google/callback"):
-            raise HTTPException(status_code=400, detail="Invalid redirect URI path.")
+    frontend_return_url = resolve_frontend_return_url(request, return_to)
+    canonical_redirect_uri = f"{get_canonical_backend_url(request)}/api/auth/google/callback"
 
     params = {
         "client_id": GOOGLE_CLIENT_ID,
         "response_type": "code",
-        "redirect_uri": redirect_uri,
+        "redirect_uri": canonical_redirect_uri,
         "scope": "openid email profile",
         "state": state,
         "access_type": "online",
         "prompt": "select_account"
     }
     url = f"https://accounts.google.com/o/oauth2/v2/auth?{urlencode(params)}"
-
     response = RedirectResponse(url=url)
 
-    # We will set a short-lived cookie for the state
     samesite = get_cookie_samesite(request)
     secure_flag = IS_PRODUCTION or (samesite == "none")
     response.set_cookie(
@@ -474,8 +520,16 @@ async def google_login(request: Request, redirect_uri: str = None):
         max_age=300
     )
     response.set_cookie(
+        key="google_oauth_return_to",
+        value=frontend_return_url,
+        httponly=True,
+        samesite=samesite,
+        secure=secure_flag,
+        max_age=300
+    )
+    response.set_cookie(
         key="google_oauth_redirect_uri",
-        value=redirect_uri,
+        value=canonical_redirect_uri,
         httponly=True,
         samesite=samesite,
         secure=secure_flag,
@@ -486,35 +540,40 @@ async def google_login(request: Request, redirect_uri: str = None):
 
 @app.get("/api/auth/google/callback")
 async def google_callback(request: Request, response: Response, state: str, code: str = None, error: str = None):
+    raw_return_to = request.cookies.get("google_oauth_return_to")
+    frontend_return_url = resolve_frontend_return_url(request, raw_return_to)
+
+    def _cleanup_and_redirect(url: str) -> RedirectResponse:
+        res = RedirectResponse(url=url)
+        res.delete_cookie("google_oauth_state")
+        res.delete_cookie("google_oauth_return_to")
+        res.delete_cookie("google_oauth_redirect_uri")
+        return res
+
+    def _error_redirect(msg: str) -> RedirectResponse:
+        encoded = urlencode({"error": msg})
+        return _cleanup_and_redirect(f"{frontend_return_url}/login?{encoded}")
+
     # Handle user cancellation
     if error:
         logger.warning(f"GOOGLE OAUTH ERROR: {error}")
-        err_res = RedirectResponse(url=f"{FRONTEND_URL}/login?error=Authentication+cancelled")
-        err_res.delete_cookie("google_oauth_state")
-        err_res.delete_cookie("google_oauth_redirect_uri")
-        return err_res
+        return _error_redirect("Authentication cancelled")
 
     if not code:
         logger.warning("GOOGLE OAUTH ERROR: Missing authorization code")
-        err_res = RedirectResponse(url=f"{FRONTEND_URL}/login?error=Missing+code")
-        err_res.delete_cookie("google_oauth_state")
-        err_res.delete_cookie("google_oauth_redirect_uri")
-        return err_res
+        return _error_redirect("Missing code")
 
     # Validate State (CSRF)
     cookie_state = request.cookies.get("google_oauth_state")
     if not cookie_state or cookie_state != state:
         logger.warning("GOOGLE OAUTH ERROR: Invalid state parameter")
-        err_res = RedirectResponse(url=f"{FRONTEND_URL}/login?error=Invalid+state")
-        err_res.delete_cookie("google_oauth_state")
-        err_res.delete_cookie("google_oauth_redirect_uri")
-        return err_res
+        return _error_redirect("Invalid state")
 
-    redirect_uri = request.cookies.get("google_oauth_redirect_uri")
-    if not redirect_uri:
-        scheme = request.headers.get("x-forwarded-proto", request.url.scheme)
-        host = request.headers.get("x-forwarded-host", request.url.netloc)
-        redirect_uri = f"{scheme}://{host}/api/auth/google/callback"
+    if not GOOGLE_CLIENT_SECRET:
+        logger.error("GOOGLE OAUTH ERROR: GOOGLE_CLIENT_SECRET is missing or unconfigured.")
+        return _error_redirect("Authentication failed - server misconfigured")
+
+    canonical_redirect_uri = request.cookies.get("google_oauth_redirect_uri") or f"{get_canonical_backend_url(request)}/api/auth/google/callback"
 
     # Exchange code for token
     async with httpx.AsyncClient() as client:
@@ -525,7 +584,7 @@ async def google_callback(request: Request, response: Response, state: str, code
                 "client_secret": GOOGLE_CLIENT_SECRET,
                 "code": code,
                 "grant_type": "authorization_code",
-                "redirect_uri": redirect_uri
+                "redirect_uri": canonical_redirect_uri
             },
             timeout=10.0
         )
@@ -533,10 +592,9 @@ async def google_callback(request: Request, response: Response, state: str, code
         id_token_str = token_data.get("id_token")
 
         if not id_token_str:
-            logger.warning("GOOGLE OAUTH ERROR: Failed to get id token")
-            err_res = RedirectResponse(url=f"{FRONTEND_URL}/login?error=Authentication+failed")
-            err_res.delete_cookie("google_oauth_state")
-            return err_res
+            err_detail = token_data.get("error_description") or token_data.get("error") or "Failed to exchange authorization code"
+            logger.warning(f"GOOGLE OAUTH ERROR: {err_detail}")
+            return _error_redirect("Authentication failed")
 
         try:
             idinfo = id_token.verify_oauth2_token(
@@ -544,16 +602,11 @@ async def google_callback(request: Request, response: Response, state: str, code
             )
         except ValueError:
             logger.warning("GOOGLE OAUTH ERROR: Invalid Google token")
-            err_res = RedirectResponse(url=f"{FRONTEND_URL}/login?error=Invalid+Google+token")
-            err_res.delete_cookie("google_oauth_state")
-            return err_res
+            return _error_redirect("Invalid Google token")
 
         if idinfo.get("email_verified") != True:
             logger.warning("GOOGLE OAUTH ERROR: Unverified email")
-            err_res = RedirectResponse(url=f"{FRONTEND_URL}/login?error=No+verified+email")
-            err_res.delete_cookie("google_oauth_state")
-            err_res.delete_cookie("google_oauth_redirect_uri")
-            return err_res
+            return _error_redirect("No verified email")
 
         email = idinfo['email']
         name = idinfo.get('name', 'Google User')
@@ -573,9 +626,18 @@ async def google_callback(request: Request, response: Response, state: str, code
         from auth import ACCESS_TOKEN_EXPIRE_MINUTES, create_access_token
         jwt_token = create_access_token(data={"sub": email})
 
-        redirect_url = f"{FRONTEND_URL}/#token={jwt_token}"
-        redirect_response = RedirectResponse(url=redirect_url)
-        samesite = get_cookie_samesite(request)
+        redirect_url = f"{frontend_return_url}/#token={jwt_token}"
+        redirect_response = _cleanup_and_redirect(redirect_url)
+
+        # Dynamic SameSite based on the destination frontend origin
+        return_host = _extract_hostname(frontend_return_url)
+        if return_host == "cyphr.cfd" or return_host.endswith(".cyphr.cfd"):
+            samesite = "lax"
+        elif return_host in ("localhost", "127.0.0.1") or not IS_PRODUCTION:
+            samesite = COOKIE_SAMESITE
+        else:
+            samesite = "none"
+
         secure_flag = IS_PRODUCTION or (samesite == "none")
         redirect_response.set_cookie(
             key="access_token",
@@ -585,37 +647,25 @@ async def google_callback(request: Request, response: Response, state: str, code
             secure=secure_flag,
             max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60
         )
-        redirect_response.delete_cookie("google_oauth_state")
-        redirect_response.delete_cookie("google_oauth_redirect_uri")
         return redirect_response
 
 
 
 @app.get("/api/auth/github/login")
-async def github_login(request: Request, redirect_uri: str = None):
+async def github_login(request: Request, return_to: str = None, redirect_uri: str = None):
     state = secrets.token_urlsafe(16)
-
-    if not redirect_uri:
-        scheme = request.headers.get("x-forwarded-proto", request.url.scheme)
-        host = request.headers.get("x-forwarded-host", request.url.netloc)
-        redirect_uri = f"{scheme}://{host}/api/auth/github/callback"
-    else:
-        # Validate redirect URI to prevent Open Redirect
-        parsed = urlparse(redirect_uri)
-        if not parsed.path.endswith("/api/auth/github/callback"):
-            raise HTTPException(status_code=400, detail="Invalid redirect URI path.")
+    frontend_return_url = resolve_frontend_return_url(request, return_to)
+    canonical_redirect_uri = f"{get_canonical_backend_url(request)}/api/auth/github/callback"
 
     params = {
         "client_id": GITHUB_CLIENT_ID,
-        "redirect_uri": redirect_uri,
+        "redirect_uri": canonical_redirect_uri,
         "state": state,
         "scope": "user:email"
     }
     url = f"https://github.com/login/oauth/authorize?{urlencode(params)}"
-
     response = RedirectResponse(url=url)
 
-    # We will set a short-lived cookie for the state
     samesite = get_cookie_samesite(request)
     secure_flag = IS_PRODUCTION or (samesite == "none")
     response.set_cookie(
@@ -627,8 +677,16 @@ async def github_login(request: Request, redirect_uri: str = None):
         max_age=300
     )
     response.set_cookie(
+        key="github_oauth_return_to",
+        value=frontend_return_url,
+        httponly=True,
+        samesite=samesite,
+        secure=secure_flag,
+        max_age=300
+    )
+    response.set_cookie(
         key="github_oauth_redirect_uri",
-        value=redirect_uri,
+        value=canonical_redirect_uri,
         httponly=True,
         samesite=samesite,
         secure=secure_flag,
@@ -639,20 +697,31 @@ async def github_login(request: Request, redirect_uri: str = None):
 
 @app.get("/api/auth/github/callback")
 async def github_callback(request: Request, response: Response, code: str, state: str):
+    raw_return_to = request.cookies.get("github_oauth_return_to")
+    frontend_return_url = resolve_frontend_return_url(request, raw_return_to)
+
+    def _cleanup_and_redirect(url: str) -> RedirectResponse:
+        res = RedirectResponse(url=url)
+        res.delete_cookie("github_oauth_state")
+        res.delete_cookie("github_oauth_return_to")
+        res.delete_cookie("github_oauth_redirect_uri")
+        return res
+
+    def _error_redirect(msg: str) -> RedirectResponse:
+        encoded = urlencode({"error": msg})
+        return _cleanup_and_redirect(f"{frontend_return_url}/login?{encoded}")
+
     # Validate State (CSRF)
     cookie_state = request.cookies.get("github_oauth_state")
     if not cookie_state or cookie_state != state:
         logger.warning("GITHUB OAUTH ERROR: Invalid state parameter")
-        err_res = RedirectResponse(url=f"{FRONTEND_URL}/login?error=Invalid+state")
-        err_res.delete_cookie("github_oauth_state")
-        err_res.delete_cookie("github_oauth_redirect_uri")
-        return err_res
+        return _error_redirect("Invalid state")
 
-    redirect_uri = request.cookies.get("github_oauth_redirect_uri")
-    if not redirect_uri:
-        scheme = request.headers.get("x-forwarded-proto", request.url.scheme)
-        host = request.headers.get("x-forwarded-host", request.url.netloc)
-        redirect_uri = f"{scheme}://{host}/api/auth/github/callback"
+    if not GITHUB_CLIENT_SECRET:
+        logger.error("GITHUB OAUTH ERROR: GITHUB_CLIENT_SECRET is missing or unconfigured.")
+        return _error_redirect("Authentication failed - server misconfigured")
+
+    canonical_redirect_uri = request.cookies.get("github_oauth_redirect_uri") or f"{get_canonical_backend_url(request)}/api/auth/github/callback"
 
     # Exchange code for token
     async with httpx.AsyncClient() as client:
@@ -663,7 +732,7 @@ async def github_callback(request: Request, response: Response, code: str, state
                 "client_id": GITHUB_CLIENT_ID,
                 "client_secret": GITHUB_CLIENT_SECRET,
                 "code": code,
-                "redirect_uri": redirect_uri,
+                "redirect_uri": canonical_redirect_uri,
                 "state": state
             },
             timeout=10.0
@@ -673,9 +742,7 @@ async def github_callback(request: Request, response: Response, code: str, state
 
         if not access_token:
             logger.warning("GITHUB OAUTH ERROR: Failed to get access token")
-            err_res = RedirectResponse(url=f"{FRONTEND_URL}/login?error=Authentication+failed")
-            err_res.delete_cookie("github_oauth_state")
-            return err_res
+            return _error_redirect("Authentication failed")
 
         # Get user profile
         user_response = await client.get(
@@ -709,10 +776,7 @@ async def github_callback(request: Request, response: Response, code: str, state
 
         if not email:
             logger.warning("GITHUB OAUTH ERROR: No verified email found")
-            err_res = RedirectResponse(url=f"{FRONTEND_URL}/login?error=No+verified+email")
-            err_res.delete_cookie("github_oauth_state")
-            err_res.delete_cookie("github_oauth_redirect_uri")
-            return err_res
+            return _error_redirect("No verified email")
 
         # Find or create CYPHR user
         user = await users_collection.find_one({"email": email})
@@ -729,9 +793,18 @@ async def github_callback(request: Request, response: Response, code: str, state
         from auth import ACCESS_TOKEN_EXPIRE_MINUTES, create_access_token
         jwt_token = create_access_token(data={"sub": email})
 
-        redirect_url = f"{FRONTEND_URL}/#token={jwt_token}"
-        redirect_response = RedirectResponse(url=redirect_url)
-        samesite = get_cookie_samesite(request)
+        redirect_url = f"{frontend_return_url}/#token={jwt_token}"
+        redirect_response = _cleanup_and_redirect(redirect_url)
+
+        # Dynamic SameSite based on destination frontend origin
+        return_host = _extract_hostname(frontend_return_url)
+        if return_host == "cyphr.cfd" or return_host.endswith(".cyphr.cfd"):
+            samesite = "lax"
+        elif return_host in ("localhost", "127.0.0.1") or not IS_PRODUCTION:
+            samesite = COOKIE_SAMESITE
+        else:
+            samesite = "none"
+
         secure_flag = IS_PRODUCTION or (samesite == "none")
         redirect_response.set_cookie(
             key="access_token",
@@ -741,8 +814,6 @@ async def github_callback(request: Request, response: Response, code: str, state
             secure=secure_flag,
             max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60
         )
-        redirect_response.delete_cookie("github_oauth_state")
-        redirect_response.delete_cookie("github_oauth_redirect_uri")
         return redirect_response
 
 @app.post("/api/logout")
