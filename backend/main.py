@@ -116,6 +116,7 @@ async def health_check():
 # Read environment variables
 IS_PRODUCTION = os.getenv("ENVIRONMENT") == "production"
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
+GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
 GITHUB_CLIENT_ID = os.getenv("GITHUB_CLIENT_ID")
 GITHUB_CLIENT_SECRET = os.getenv("GITHUB_CLIENT_SECRET")
 
@@ -434,19 +435,111 @@ async def login(request: Request, body_req: LoginRequest, response: Response):
         "access_token": access_token
     }
 
-@app.post("/api/auth/google")
-@limiter.limit(RATE_LIMIT_GOOGLE)
-async def google_auth(request: Request, body_req: GoogleAuthRequest, response: Response):
-    request_obj = request
-    request = body_req
-    try:
-        idinfo = id_token.verify_oauth2_token(request.credential, google_requests.Request(), GOOGLE_CLIENT_ID,clock_skew_in_seconds=60,)
+@app.get("/api/auth/google/login")
+async def google_login(request: Request):
+    state = secrets.token_urlsafe(16)
+
+    # Determine the host from the request to construct the redirect URI dynamically
+    scheme = request.headers.get("x-forwarded-proto", request.url.scheme)
+    host = request.headers.get("x-forwarded-host", request.url.netloc)
+    redirect_uri = f"{scheme}://{host}/api/auth/google/callback"
+
+    params = {
+        "client_id": GOOGLE_CLIENT_ID,
+        "response_type": "code",
+        "redirect_uri": redirect_uri,
+        "scope": "openid email profile",
+        "state": state,
+        "access_type": "online",
+        "prompt": "select_account"
+    }
+    url = f"https://accounts.google.com/o/oauth2/v2/auth?{urlencode(params)}"
+
+    response = RedirectResponse(url=url)
+
+    # We will set a short-lived cookie for the state
+    samesite = get_cookie_samesite(request)
+    secure_flag = IS_PRODUCTION or (samesite == "none")
+    response.set_cookie(
+        key="google_oauth_state",
+        value=state,
+        httponly=True,
+        samesite=samesite,
+        secure=secure_flag,
+        max_age=300
+    )
+
+    return response
+
+@app.get("/api/auth/google/callback")
+async def google_callback(request: Request, response: Response, state: str, code: str = None, error: str = None):
+    # Handle user cancellation
+    if error:
+        logger.warning(f"GOOGLE OAUTH ERROR: {error}")
+        err_res = RedirectResponse(url=f"{FRONTEND_URL}/login?error=Authentication+cancelled")
+        err_res.delete_cookie("google_oauth_state")
+        return err_res
+
+    if not code:
+        logger.warning("GOOGLE OAUTH ERROR: Missing authorization code")
+        err_res = RedirectResponse(url=f"{FRONTEND_URL}/login?error=Missing+code")
+        err_res.delete_cookie("google_oauth_state")
+        return err_res
+
+    # Validate State (CSRF)
+    cookie_state = request.cookies.get("google_oauth_state")
+    if not cookie_state or cookie_state != state:
+        logger.warning("GOOGLE OAUTH ERROR: Invalid state parameter")
+        err_res = RedirectResponse(url=f"{FRONTEND_URL}/login?error=Invalid+state")
+        err_res.delete_cookie("google_oauth_state")
+        return err_res
+
+    scheme = request.headers.get("x-forwarded-proto", request.url.scheme)
+    host = request.headers.get("x-forwarded-host", request.url.netloc)
+    redirect_uri = f"{scheme}://{host}/api/auth/google/callback"
+
+    # Exchange code for token
+    async with httpx.AsyncClient() as client:
+        token_response = await client.post(
+            "https://oauth2.googleapis.com/token",
+            data={
+                "client_id": GOOGLE_CLIENT_ID,
+                "client_secret": GOOGLE_CLIENT_SECRET,
+                "code": code,
+                "grant_type": "authorization_code",
+                "redirect_uri": redirect_uri
+            },
+            timeout=10.0
+        )
+        token_data = token_response.json()
+        id_token_str = token_data.get("id_token")
+
+        if not id_token_str:
+            logger.warning("GOOGLE OAUTH ERROR: Failed to get id token")
+            err_res = RedirectResponse(url=f"{FRONTEND_URL}/login?error=Authentication+failed")
+            err_res.delete_cookie("google_oauth_state")
+            return err_res
+
+        try:
+            idinfo = id_token.verify_oauth2_token(
+                id_token_str, google_requests.Request(), GOOGLE_CLIENT_ID, clock_skew_in_seconds=60
+            )
+        except ValueError:
+            logger.warning("GOOGLE OAUTH ERROR: Invalid Google token")
+            err_res = RedirectResponse(url=f"{FRONTEND_URL}/login?error=Invalid+Google+token")
+            err_res.delete_cookie("google_oauth_state")
+            return err_res
+
         if idinfo.get("email_verified") != True:
-            logger.warning("GOOGLE VERIFY ERROR: Unverified email")
-            raise HTTPException(status_code=401, detail="Invalid Google token")
+            logger.warning("GOOGLE OAUTH ERROR: Unverified email")
+            err_res = RedirectResponse(url=f"{FRONTEND_URL}/login?error=No+verified+email")
+            err_res.delete_cookie("google_oauth_state")
+            return err_res
+
         email = idinfo['email']
         name = idinfo.get('name', 'Google User')
 
+        # Find or create CYPHR user
         user = await users_collection.find_one({"email": email})
         if not user:
             user_doc = {
@@ -457,27 +550,24 @@ async def google_auth(request: Request, body_req: GoogleAuthRequest, response: R
             }
             await users_collection.insert_one(user_doc)
 
-        access_token = create_access_token(data={"sub": email})
-        from auth import ACCESS_TOKEN_EXPIRE_MINUTES
-        samesite = get_cookie_samesite(request_obj)
+        # Create JWT and set cookie
+        from auth import ACCESS_TOKEN_EXPIRE_MINUTES, create_access_token
+        jwt_token = create_access_token(data={"sub": email})
+
+        redirect_url = f"{FRONTEND_URL}/#token={jwt_token}"
+        redirect_response = RedirectResponse(url=redirect_url)
+        samesite = get_cookie_samesite(request)
         secure_flag = IS_PRODUCTION or (samesite == "none")
-        response.set_cookie(
+        redirect_response.set_cookie(
             key="access_token",
-            value=access_token,
+            value=jwt_token,
             httponly=True,
             samesite=samesite,
             secure=secure_flag,
             max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60
         )
-        return {
-            "message": "Login successful",
-            "user": {"email": email, "fullname": name},
-            "access": access_token,
-            "access_token": access_token
-        }
-    except ValueError as e:
-        logger.warning("GOOGLE VERIFY ERROR: Invalid Google token")
-        raise HTTPException(status_code=401, detail="Invalid Google token")
+        redirect_response.delete_cookie("google_oauth_state")
+        return redirect_response
 
 
 
