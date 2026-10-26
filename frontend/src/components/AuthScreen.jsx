@@ -158,12 +158,16 @@ const AuthScreen = ({ onAuthSuccess }) => {
   const handleGithubLogin = () => {
     setLoading(true);
     setError(null);
-    window.location.href = `${axios.defaults.baseURL || ''}/api/auth/github/login`;
+    const backendUrl = axios.defaults.baseURL || window.location.origin;
+    const redirectUri = encodeURIComponent(`${backendUrl}/api/auth/github/callback`);
+    window.location.href = `${backendUrl}/api/auth/github/login?redirect_uri=${redirectUri}`;
   };
   const handleGoogleLogin = () => {
     setLoading(true);
     setError(null);
-    window.location.href = `${axios.defaults.baseURL || ''}/api/auth/google/login`;
+    const backendUrl = axios.defaults.baseURL || window.location.origin;
+    const redirectUri = encodeURIComponent(`${backendUrl}/api/auth/google/callback`);
+    window.location.href = `${backendUrl}/api/auth/google/login?redirect_uri=${redirectUri}`;
   };
 
   return (
