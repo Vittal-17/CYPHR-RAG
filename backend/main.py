@@ -436,13 +436,18 @@ async def login(request: Request, body_req: LoginRequest, response: Response):
     }
 
 @app.get("/api/auth/google/login")
-async def google_login(request: Request):
+async def google_login(request: Request, redirect_uri: str = None):
     state = secrets.token_urlsafe(16)
 
-    # Determine the host from the request to construct the redirect URI dynamically
-    scheme = request.headers.get("x-forwarded-proto", request.url.scheme)
-    host = request.headers.get("x-forwarded-host", request.url.netloc)
-    redirect_uri = f"{scheme}://{host}/api/auth/google/callback"
+    if not redirect_uri:
+        scheme = request.headers.get("x-forwarded-proto", request.url.scheme)
+        host = request.headers.get("x-forwarded-host", request.url.netloc)
+        redirect_uri = f"{scheme}://{host}/api/auth/google/callback"
+    else:
+        # Validate redirect URI to prevent Open Redirect
+        parsed = urlparse(redirect_uri)
+        if not parsed.path.endswith("/api/auth/google/callback"):
+            raise HTTPException(status_code=400, detail="Invalid redirect URI path.")
 
     params = {
         "client_id": GOOGLE_CLIENT_ID,
@@ -468,6 +473,14 @@ async def google_login(request: Request):
         secure=secure_flag,
         max_age=300
     )
+    response.set_cookie(
+        key="google_oauth_redirect_uri",
+        value=redirect_uri,
+        httponly=True,
+        samesite=samesite,
+        secure=secure_flag,
+        max_age=300
+    )
 
     return response
 
@@ -478,12 +491,14 @@ async def google_callback(request: Request, response: Response, state: str, code
         logger.warning(f"GOOGLE OAUTH ERROR: {error}")
         err_res = RedirectResponse(url=f"{FRONTEND_URL}/login?error=Authentication+cancelled")
         err_res.delete_cookie("google_oauth_state")
+        err_res.delete_cookie("google_oauth_redirect_uri")
         return err_res
 
     if not code:
         logger.warning("GOOGLE OAUTH ERROR: Missing authorization code")
         err_res = RedirectResponse(url=f"{FRONTEND_URL}/login?error=Missing+code")
         err_res.delete_cookie("google_oauth_state")
+        err_res.delete_cookie("google_oauth_redirect_uri")
         return err_res
 
     # Validate State (CSRF)
@@ -492,11 +507,14 @@ async def google_callback(request: Request, response: Response, state: str, code
         logger.warning("GOOGLE OAUTH ERROR: Invalid state parameter")
         err_res = RedirectResponse(url=f"{FRONTEND_URL}/login?error=Invalid+state")
         err_res.delete_cookie("google_oauth_state")
+        err_res.delete_cookie("google_oauth_redirect_uri")
         return err_res
 
-    scheme = request.headers.get("x-forwarded-proto", request.url.scheme)
-    host = request.headers.get("x-forwarded-host", request.url.netloc)
-    redirect_uri = f"{scheme}://{host}/api/auth/google/callback"
+    redirect_uri = request.cookies.get("google_oauth_redirect_uri")
+    if not redirect_uri:
+        scheme = request.headers.get("x-forwarded-proto", request.url.scheme)
+        host = request.headers.get("x-forwarded-host", request.url.netloc)
+        redirect_uri = f"{scheme}://{host}/api/auth/google/callback"
 
     # Exchange code for token
     async with httpx.AsyncClient() as client:
@@ -534,6 +552,7 @@ async def google_callback(request: Request, response: Response, state: str, code
             logger.warning("GOOGLE OAUTH ERROR: Unverified email")
             err_res = RedirectResponse(url=f"{FRONTEND_URL}/login?error=No+verified+email")
             err_res.delete_cookie("google_oauth_state")
+            err_res.delete_cookie("google_oauth_redirect_uri")
             return err_res
 
         email = idinfo['email']
@@ -567,16 +586,28 @@ async def google_callback(request: Request, response: Response, state: str, code
             max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60
         )
         redirect_response.delete_cookie("google_oauth_state")
+        redirect_response.delete_cookie("google_oauth_redirect_uri")
         return redirect_response
 
 
 
 @app.get("/api/auth/github/login")
-async def github_login(request: Request):
+async def github_login(request: Request, redirect_uri: str = None):
     state = secrets.token_urlsafe(16)
+
+    if not redirect_uri:
+        scheme = request.headers.get("x-forwarded-proto", request.url.scheme)
+        host = request.headers.get("x-forwarded-host", request.url.netloc)
+        redirect_uri = f"{scheme}://{host}/api/auth/github/callback"
+    else:
+        # Validate redirect URI to prevent Open Redirect
+        parsed = urlparse(redirect_uri)
+        if not parsed.path.endswith("/api/auth/github/callback"):
+            raise HTTPException(status_code=400, detail="Invalid redirect URI path.")
 
     params = {
         "client_id": GITHUB_CLIENT_ID,
+        "redirect_uri": redirect_uri,
         "state": state,
         "scope": "user:email"
     }
@@ -595,6 +626,14 @@ async def github_login(request: Request):
         secure=secure_flag,
         max_age=300
     )
+    response.set_cookie(
+        key="github_oauth_redirect_uri",
+        value=redirect_uri,
+        httponly=True,
+        samesite=samesite,
+        secure=secure_flag,
+        max_age=300
+    )
 
     return response
 
@@ -606,7 +645,14 @@ async def github_callback(request: Request, response: Response, code: str, state
         logger.warning("GITHUB OAUTH ERROR: Invalid state parameter")
         err_res = RedirectResponse(url=f"{FRONTEND_URL}/login?error=Invalid+state")
         err_res.delete_cookie("github_oauth_state")
+        err_res.delete_cookie("github_oauth_redirect_uri")
         return err_res
+
+    redirect_uri = request.cookies.get("github_oauth_redirect_uri")
+    if not redirect_uri:
+        scheme = request.headers.get("x-forwarded-proto", request.url.scheme)
+        host = request.headers.get("x-forwarded-host", request.url.netloc)
+        redirect_uri = f"{scheme}://{host}/api/auth/github/callback"
 
     # Exchange code for token
     async with httpx.AsyncClient() as client:
@@ -617,6 +663,7 @@ async def github_callback(request: Request, response: Response, code: str, state
                 "client_id": GITHUB_CLIENT_ID,
                 "client_secret": GITHUB_CLIENT_SECRET,
                 "code": code,
+                "redirect_uri": redirect_uri,
                 "state": state
             },
             timeout=10.0
@@ -664,6 +711,7 @@ async def github_callback(request: Request, response: Response, code: str, state
             logger.warning("GITHUB OAUTH ERROR: No verified email found")
             err_res = RedirectResponse(url=f"{FRONTEND_URL}/login?error=No+verified+email")
             err_res.delete_cookie("github_oauth_state")
+            err_res.delete_cookie("github_oauth_redirect_uri")
             return err_res
 
         # Find or create CYPHR user
@@ -694,6 +742,7 @@ async def github_callback(request: Request, response: Response, code: str, state
             max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60
         )
         redirect_response.delete_cookie("github_oauth_state")
+        redirect_response.delete_cookie("github_oauth_redirect_uri")
         return redirect_response
 
 @app.post("/api/logout")
