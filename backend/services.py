@@ -106,34 +106,40 @@ async def process_and_store_document(filename: str, pdf_bytes: bytes, user_email
 
     for page_info in pages_data:
         page_num = page_info["page"]
-        page_text = page_info["text"]
+        lines = page_info["text"].splitlines()
+        current_block_lines = []
 
-        # Track active section across lines on this page
-        page_sections = []
-        for line in page_text.splitlines():
+        for line in lines:
             header = detect_section_header(line)
             if header:
+                # Flush existing block with previous active_section
+                if current_block_lines:
+                    block_text = "\n".join(current_block_lines).strip()
+                    if block_text:
+                        for chunk in chunk_text(block_text):
+                            enriched = f"[Section: {active_section}]\n{chunk}" if active_section else chunk
+                            all_chunks_info.append({
+                                "page": page_num,
+                                "chunk_index": len(all_chunks_info),
+                                "text": enriched,
+                                "section": active_section
+                            })
+                    current_block_lines = []
                 active_section = header
-                page_sections.append(header)
+            current_block_lines.append(line)
 
-        chunks = chunk_text(page_text)
-        for i, chunk in enumerate(chunks):
-            chunk_section = active_section
-            for header in page_sections:
-                if header in chunk.upper():
-                    chunk_section = header
-
-            # Enrich chunk with section context
-            enriched_text = chunk
-            if chunk_section and not chunk.startswith(f"[Section: {chunk_section}]"):
-                enriched_text = f"[Section: {chunk_section}]\n{chunk}"
-
-            all_chunks_info.append({
-                "page": page_num,
-                "chunk_index": i,
-                "text": enriched_text,
-                "section": chunk_section
-            })
+        # Flush remaining lines at end of page
+        if current_block_lines:
+            block_text = "\n".join(current_block_lines).strip()
+            if block_text:
+                for chunk in chunk_text(block_text):
+                    enriched = f"[Section: {active_section}]\n{chunk}" if active_section else chunk
+                    all_chunks_info.append({
+                        "page": page_num,
+                        "chunk_index": len(all_chunks_info),
+                        "text": enriched,
+                        "section": active_section
+                    })
 
     if len(all_chunks_info) > MAX_CHUNKS_PER_DOCUMENT:
         raise ValueError(f"PDF produces too many text chunks. Maximum is {MAX_CHUNKS_PER_DOCUMENT}.")
@@ -376,11 +382,24 @@ Question:
         # Build messages payload with conversational history
         messages = [{"role": "system", "content": prompt}]
         if chat_history:
-            for m in chat_history[-4:]:
+            # If the session has earlier turns beyond the recent window, anchor the initial inquiry
+            if len(chat_history) > 10:
+                first_user_turn = next((m.get("content") for m in chat_history if m.get("role") == "user"), None)
+                if first_user_turn:
+                    messages.append({
+                        "role": "system",
+                        "content": f"[Conversation context: This chat session originally began with the user asking: '{first_user_turn[:300]}']"
+                    })
+
+            # Pass up to the last 10 messages (5 complete turns)
+            for m in chat_history[-10:]:
                 role = "assistant" if m.get("role") == "assistant" else "user"
                 content = (m.get("content") or "").strip()
-                if len(content) > 800:
-                    content = content[:800] + "..."
+                # Compact assistant responses in history to 400 chars to conserve free-tier tokens
+                if role == "assistant" and len(content) > 400:
+                    content = content[:400] + "..."
+                elif role == "user" and len(content) > 500:
+                    content = content[:500] + "..."
                 if content:
                     messages.append({"role": role, "content": content})
 

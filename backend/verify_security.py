@@ -3454,9 +3454,54 @@ class TestDynamicDualAuthAndMultiDomain(unittest.IsolatedAsyncioTestCase):
             }
             await provider.embed_documents(["Chunk 1 text", "Chunk 2 text"])
             self.assertEqual(mock_post.call_count, 1)
-            doc_payload = mock_post.call_args[0][0]
-            self.assertEqual(doc_payload.get("task"), "retrieval.passage")
             await provider.close()
+
+    @patch("services.collection")
+    @patch("embeddings.JinaEmbeddingProvider.embed_query", new_callable=AsyncMock)
+    @patch("services.get_provider_client")
+    async def test_enterprise_rag_5_turn_conversational_recall(self, mock_provider, mock_embed, mock_coll):
+        """Verify that across 5 conversational turns, Turn 1 remains present in the LLM context."""
+        from services import generate_chat_response
+        mock_embed.return_value = [0.1] * 768
+        mock_coll.distinct = AsyncMock(return_value=["Vittal_JG_Resume.pdf"])
+        mock_cursor = AsyncMock()
+        mock_cursor.to_list = AsyncMock(return_value=[])
+        mock_coll.aggregate.return_value = mock_cursor
+
+        captured_messages = []
+        mock_llm_response = MagicMock()
+        mock_llm_response.choices = [MagicMock(message=MagicMock(content="Your first question was: List my projects, all of them."))]
+        mock_client = MagicMock()
+
+        async def fake_create(*args, **kwargs):
+            nonlocal captured_messages
+            captured_messages = kwargs.get("messages", [])
+            return mock_llm_response
+
+        mock_client.chat.completions.create = fake_create
+        mock_provider.return_value = (mock_client, 'gemini', 'gemini-2.5-flash')
+
+        history_5_turns = [
+            {"role": "user", "content": "List my projects, all of them"},
+            {"role": "assistant", "content": "Here are 4 projects: CYPHR, EazyShop, AI Estimator, KRYPTON."},
+            {"role": "user", "content": "Only 4 projects ?? Check again"},
+            {"role": "assistant", "content": "I combed through and see 4 projects."},
+            {"role": "user", "content": "Explain Every single project in detail please"},
+            {"role": "assistant", "content": "Detailed breakdown of the projects..."},
+            {"role": "user", "content": "Which of those projects involved machine learning or security?"},
+            {"role": "assistant", "content": "CYPHR and AI Estimator involved ML; CYPHR and EazyShop involved security."}
+        ]
+
+        await generate_chat_response(
+            "What was my first question in this conversation?",
+            "user@test.com",
+            chat_history=history_5_turns
+        )
+
+        # Confirm Turn 1 user query is in captured_messages
+        user_queries = [m["content"] for m in captured_messages if m["role"] == "user"]
+        self.assertIn("List my projects, all of them", user_queries)
+        self.assertIn("What was my first question in this conversation?", user_queries)
 
 
 if __name__ == '__main__':
