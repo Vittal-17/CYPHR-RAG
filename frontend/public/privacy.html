@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Privacy Policy - CYPHR</title>
+  <link rel="icon" type="image/png" href="/favicon.png" />
+  <style>
+    :root {
+      --bg: #030712;
+      --card-bg: rgba(17, 24, 39, 0.7);
+      --border: rgba(55, 65, 81, 0.6);
+      --text: #f3f4f6;
+      --text-muted: #9ca3af;
+      --accent: #00e5ff;
+      --accent-glow: rgba(0, 229, 255, 0.15);
+    }
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      background-color: var(--bg);
+      color: var(--text);
+      line-height: 1.65;
+      padding: 2rem 1rem;
+    }
+    .container {
+      max-width: 800px;
+      margin: 0 auto;
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 2.5rem;
+      backdrop-filter: blur(12px);
+      box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5);
+    }
+    .header {
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 1.5rem;
+      margin-bottom: 2rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .logo-group {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .logo-group img {
+      width: 32px;
+      height: 32px;
+    }
+    .logo-title {
+      font-size: 1.25rem;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      color: #fff;
+    }
+    .back-link {
+      color: var(--accent);
+      text-decoration: none;
+      font-size: 0.875rem;
+      font-weight: 500;
+      transition: opacity 0.2s;
+    }
+    .back-link:hover {
+      text-decoration: underline;
+    }
+    h1 {
+      font-size: 1.85rem;
+      font-weight: 700;
+      margin-bottom: 0.5rem;
+      color: #fff;
+    }
+    .effective-date {
+      color: var(--text-muted);
+      font-size: 0.875rem;
+      margin-bottom: 2rem;
+    }
+    h2 {
+      font-size: 1.25rem;
+      font-weight: 600;
+      margin-top: 1.75rem;
+      margin-bottom: 0.75rem;
+      color: #fff;
+      border-left: 3px solid var(--accent);
+      padding-left: 0.5rem;
+    }
+    p, ul {
+      color: var(--text-muted);
+      margin-bottom: 1rem;
+      font-size: 0.95rem;
+    }
+    ul {
+      padding-left: 1.25rem;
+    }
+    li {
+      margin-bottom: 0.4rem;
+    }
+    .highlight-box {
+      background: var(--accent-glow);
+      border: 1px solid rgba(0, 229, 255, 0.3);
+      border-radius: 8px;
+      padding: 1.25rem;
+      margin: 1.5rem 0;
+    }
+    .highlight-box p {
+      color: #e0f2fe;
+      margin-bottom: 0;
+    }
+    a {
+      color: var(--accent);
+    }
+    .footer {
+      margin-top: 3rem;
+      padding-top: 1.5rem;
+      border-top: 1px solid var(--border);
+      text-align: center;
+      font-size: 0.825rem;
+      color: var(--text-muted);
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <div class="logo-group">
+        <img src="/favicon.png" alt="CYPHR Logo" />
+        <span class="logo-title">CYPHR</span>
+      </div>
+      <a href="/" class="back-link">&larr; Back to Application</a>
+    </div>
+
+    <h1>Privacy Policy</h1>
+    <p class="effective-date">Effective Date: October 26, 2026 | Last Updated: October 29, 2026</p>
+
+    <p>
+      At CYPHR (accessible via <a href="https://cyphr.cfd">https://cyphr.cfd</a> and designated mirrors), accessible from our application workspace, one of our main priorities is the privacy of our visitors and registered users. This Privacy Policy outlines the types of information collected and recorded by CYPHR and how we use, protect, and handle it.
+    </p>
+
+    <h2>1. Information We Collect</h2>
+    <p>CYPHR collects only the minimum necessary data to provide our Retrieval-Augmented Generation (RAG) and workspace indexing services:</p>
+    <ul>
+      <li><strong>Google User Data (OAuth):</strong> When you sign in to CYPHR using Google OAuth 2.0, we request permission to access your basic profile information (specifically your email address, name, and profile avatar URL). We do not request access to your Google Drive, Gmail, contacts, or calendar.</li>
+      <li><strong>Account Credentials:</strong> If you register via email and password, we securely store your email, display name, and a one-way cryptographically salted password hash (Argon2/bcrypt). Plaintext passwords are never stored.</li>
+      <li><strong>Uploaded Document Content:</strong> Any documents (such as PDF files) that you voluntarily upload are processed, indexed into mathematical vector embeddings, and stored strictly associated with your authenticated user ID.</li>
+      <li><strong>Chat Messages:</strong> Conversation history and query prompts sent within your workspace are retained solely to maintain your chat session context.</li>
+    </ul>
+
+    <div class="highlight-box">
+      <p>
+        <strong>Google API Services User Data Policy Compliance:</strong><br />
+        CYPHR's use and transfer to any other app of information received from Google APIs adheres to the 
+        <a href="https://developers.google.com/terms/api-services-user-data-policy" target="_blank" rel="noopener noreferrer">Google API Services User Data Policy</a>, including the <strong>Limited Use</strong> requirements.
+      </p>
+    </div>
+
+    <h2>2. How We Use Your Information</h2>
+    <p>We use the collected information exclusively to operate and enhance our application:</p>
+    <ul>
+      <li>To authenticate your identity, prevent unauthorized access, and manage secure user sessions.</li>
+      <li>To isolate and scope your uploaded documents, embeddings, and chat histories strictly to your account.</li>
+      <li>To generate contextual answers based on your uploaded source documents via secure AI reasoning providers.</li>
+      <li>To maintain system integrity, detect abuse, and prevent CSRF/bot attacks.</li>
+    </ul>
+
+    <h2>3. Data Sharing & Third Parties</h2>
+    <p>
+      <strong>We do not sell, rent, monetize, or trade your personal data or Google user data under any circumstances.</strong>
+    </p>
+    <p>Data is transferred only to trusted infrastructure providers essential to application operation:</p>
+    <ul>
+      <li><strong>Database Hosting (MongoDB Atlas):</strong> Encrypted storage of user profile records, document metadata, and chat history.</li>
+      <li><strong>Embedding & LLM Inference Providers:</strong> Text chunks are sent to vetted AI inference APIs solely to compute embeddings and generate RAG responses in real time. These inputs are not used to train third-party foundation models.</li>
+    </ul>
+
+    <h2>4. Data Retention & Deletion</h2>
+    <p>
+      Your data is stored for as long as your account remains active. You maintain complete control over your content:
+    </p>
+    <ul>
+      <li><strong>Document Deletion:</strong> You can delete any uploaded document from the Knowledge Base modal at any time. When deleted, associated vector embeddings are purged from the database immediately.</li>
+      <li><strong>Conversation Deletion:</strong> You can clear or delete individual conversation threads directly from the sidebar.</li>
+      <li><strong>Account & Data Erasure:</strong> To request complete deletion of your account and all associated documents, contact us at the email listed below. All user records will be permanently erased within 48 hours of verification.</li>
+    </ul>
+
+    <h2>5. Security of Your Information</h2>
+    <p>
+      We employ defense-in-depth enterprise security standards to protect your data, including TLS/HTTPS encryption in transit, HTTP-only secure session cookies with SameSite protections, origin access controls, and rate limiting against brute-force attempts.
+    </p>
+
+    <h2>6. Children's Privacy</h2>
+    <p>
+      CYPHR does not knowingly collect any Personal Identifiable Information from children under the age of 13. If you believe your child has provided personal information on our website, please contact us immediately.
+    </p>
+
+    <h2>7. Contact Information</h2>
+    <p>
+      If you have questions or require further information regarding our Privacy Policy or data handling practices, please contact our administrative developer:
+    </p>
+    <ul>
+      <li><strong>Developer Contact:</strong> Vitthal</li>
+      <li><strong>Email:</strong> <a href="mailto:vitthaljg@gmail.com">vitthaljg@gmail.com</a></li>
+      <li><strong>Official Website:</strong> <a href="https://cyphr.cfd">https://cyphr.cfd</a></li>
+    </ul>
+
+    <div class="footer">
+      &copy; 2026 CYPHR. All rights reserved.
+    </div>
+  </div>
+</body>
+</html>

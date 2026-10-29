@@ -419,6 +419,17 @@ const AuthScreen = ({ onAuthSuccess }) => {
                   {isLogin ? 'Sign in with GitHub' : 'Sign up with GitHub'}
                 </button>
               </div>
+
+              <div className="mt-comfortable border-t border-line-subtle pt-3 text-center">
+                <a
+                  href="/privacy"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-cap text-ink-faint hover:text-ink transition-colors underline decoration-line-subtle underline-offset-4"
+                >
+                  Privacy Policy
+                </a>
+              </div>
             </div>
           </div>
         </div>
