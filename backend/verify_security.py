@@ -3503,6 +3503,44 @@ class TestDynamicDualAuthAndMultiDomain(unittest.IsolatedAsyncioTestCase):
         self.assertIn("List my projects, all of them", user_queries)
         self.assertIn("What was my first question in this conversation?", user_queries)
 
+    @patch("services.collection")
+    @patch("embeddings.JinaEmbeddingProvider.embed_query", new_callable=AsyncMock)
+    @patch("services.get_provider_client")
+    async def test_enterprise_rag_precision_multi_page_and_meta_citations(self, mock_provider, mock_embed, mock_coll):
+        """Verify multi-page citations are captured for multi-page answers and suppressed for conversational meta-queries."""
+        from services import generate_chat_response
+        mock_embed.return_value = [0.1] * 768
+        mock_coll.distinct = AsyncMock(return_value=["Vittal_JG_Resume.pdf"])
+        mock_cursor = AsyncMock()
+        mock_cursor.to_list = AsyncMock(return_value=[
+            {"filename": "Vittal_JG_Resume.pdf", "page": 1, "text": "CYPHR and EazyShop platform architecture."},
+            {"filename": "Vittal_JG_Resume.pdf", "page": 2, "text": "AI House Price Estimator and KRYPTON and Developer Portfolio."}
+        ])
+        mock_coll.aggregate.return_value = mock_cursor
+
+        # Case 1: Multi-page answer utilizing both Page 1 and Page 2 chunks
+        mock_llm_response = MagicMock()
+        mock_llm_response.choices = [MagicMock(message=MagicMock(content="Here are the projects: CYPHR, EazyShop, AI House Price Estimator, and KRYPTON."))]
+        mock_client = MagicMock()
+        mock_client.chat.completions.create = AsyncMock(return_value=mock_llm_response)
+        mock_provider.return_value = (mock_client, 'gemini', 'gemini-2.5-flash')
+
+        answer_multipage = await generate_chat_response("List my projects, all of them", "user@test.com")
+        self.assertIn("- **Vittal_JG_Resume.pdf** (Page 1)", answer_multipage)
+        self.assertIn("- **Vittal_JG_Resume.pdf** (Page 2)", answer_multipage)
+
+        # Case 2: Pure conversational meta-query suppresses document citations
+        mock_llm_response.choices = [MagicMock(message=MagicMock(content="Your first question was: List my projects, all of them."))]
+        mock_client.chat.completions.create = AsyncMock(return_value=mock_llm_response)
+
+        answer_meta = await generate_chat_response(
+            "What was my first question in this conversation?",
+            "user@test.com",
+            chat_history=[{"role": "user", "content": "List my projects, all of them"}]
+        )
+        self.assertNotIn("### 📚 Sources:", answer_meta)
+        self.assertNotIn("Vittal_JG_Resume.pdf", answer_meta)
+
 
 if __name__ == '__main__':
 
