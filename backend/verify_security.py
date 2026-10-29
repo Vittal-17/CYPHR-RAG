@@ -3214,8 +3214,253 @@ class TestDynamicDualAuthAndMultiDomain(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(res.status_code, 200)
             self.assertEqual(res.json()['user']['email'], "fallback_tenant@cyphr.io")
 
+    # =========================================================================
+    # ENTERPRISE RAG ARCHITECTURE & CONVERSATIONAL MEMORY VERIFICATION
+    # =========================================================================
+
+    @patch("main.chats_collection.find_one", new_callable=AsyncMock)
+    @patch("main.chats_collection.update_one", new_callable=AsyncMock)
+    @patch("main.generate_chat_response", new_callable=AsyncMock)
+    def test_enterprise_rag_chat_endpoint_forwards_history(self, mock_generate, mock_update, mock_find):
+        """Verify /chat endpoint forwards existing conversational history to generate_chat_response."""
+        from main import get_current_user
+        app.dependency_overrides[get_current_user] = lambda: {"email": "user@test.com", "fullname": "Test User"}
+
+        mock_find.return_value = {
+            "chat_id": "thread-123",
+            "user_email": "user@test.com",
+            "title": "Existing Chat",
+            "messages": [
+                {"role": "user", "content": "List my projects, all of them"},
+                {"role": "assistant", "content": "Here are 2 projects: CYPHR and Portfolio"}
+            ]
+        }
+        mock_generate.return_value = "Here are the remaining 3 projects: EazyShop, KRYPTON, House Price."
+
+        csrf_token = "mock-csrf-token"
+        with temporary_cookies(client, {"csrf_token": csrf_token}):
+            response = client.post(
+                "/chat",
+                json={"message": "Only 2 projects ??", "chat_id": "thread-123"},
+                headers={"X-CSRF-Token": csrf_token}
+            )
+        self.assertEqual(response.status_code, 200)
+        mock_generate.assert_called_once()
+        _, kwargs = mock_generate.call_args
+        self.assertIn("chat_history", kwargs)
+        self.assertEqual(len(kwargs["chat_history"]), 2)
+        self.assertEqual(kwargs["chat_history"][0]["content"], "List my projects, all of them")
+
+    @patch("services.collection")
+    @patch("embeddings.JinaEmbeddingProvider.embed_query", new_callable=AsyncMock)
+    @patch("services.get_provider_client")
+    async def test_enterprise_rag_conversational_memory_passed_to_llm(self, mock_provider, mock_embed, mock_coll):
+        """Verify prior turns in chat_history are passed into LLM messages payload, eliminating Turn 4 amnesia."""
+        from services import generate_chat_response
+        mock_embed.return_value = [0.1] * 768
+        mock_coll.distinct = AsyncMock(return_value=["Vittal_JG_Resume.pdf"])
+        mock_cursor = AsyncMock()
+        mock_cursor.to_list = AsyncMock(return_value=[
+            {"filename": "Vittal_JG_Resume.pdf", "page": 1, "text": "Project CYPHR and EazyShop."}
+        ])
+        mock_coll.aggregate.return_value = mock_cursor
+
+        captured_messages = []
+        mock_llm_response = MagicMock()
+        mock_llm_response.choices = [MagicMock(message=MagicMock(content="Here is the explanation."))]
+        mock_client = MagicMock()
+
+        async def fake_create(*args, **kwargs):
+            nonlocal captured_messages
+            captured_messages = kwargs.get("messages", [])
+            return mock_llm_response
+
+        mock_client.chat.completions.create = fake_create
+        mock_provider.return_value = (mock_client, 'gemini', 'gemini-2.5-flash')
+
+        prior_history = [
+            {"role": "user", "content": "List my projects"},
+            {"role": "assistant", "content": "Found CYPHR and EazyShop."}
+        ]
+        await generate_chat_response(
+            "Why did not you list these 3 projects earlier?",
+            "user@test.com",
+            chat_history=prior_history
+        )
+
+        roles = [m["role"] for m in captured_messages]
+        self.assertEqual(roles, ["system", "user", "assistant", "user"])
+        self.assertEqual(captured_messages[1]["content"], "List my projects")
+        self.assertEqual(captured_messages[2]["content"], "Found CYPHR and EazyShop.")
+        self.assertEqual(captured_messages[3]["content"], "Why did not you list these 3 projects earlier?")
+
+    async def test_enterprise_rag_query_condensation_free_tier_safeguards(self):
+        """Verify query condensation strictly avoids LLM calls on Turn 1 and has bounded token limits."""
+        from services import condense_query_with_history
+
+        # Turn 1: chat_history is None or empty -> must NOT call any LLM, returns query immediately
+        res1 = await condense_query_with_history("List my projects, all of them", None)
+        self.assertEqual(res1, "List my projects, all of them")
+
+        res2 = await condense_query_with_history("List my projects, all of them", [])
+        self.assertEqual(res2, "List my projects, all of them")
+
+        # Turn 2: ambiguous follow-up query with history -> reformulates with 64 token limit
+        mock_llm_res = MagicMock()
+        mock_llm_res.choices = [MagicMock(message=MagicMock(content="List all software engineering projects in resume"))]
+        mock_client = MagicMock()
+        mock_client.chat.completions.create = AsyncMock(return_value=mock_llm_res)
+
+        history = [
+            {"role": "user", "content": "What is in my resume?"},
+            {"role": "assistant", "content": "Your resume details software engineering experience."}
+        ]
+        with patch("services.get_provider_client", return_value=(mock_client, "groq", "openai/gpt-oss-20b")):
+            condensed = await condense_query_with_history("Only 2 projects ??", history)
+            self.assertEqual(condensed, "List all software engineering projects in resume")
+            mock_client.chat.completions.create.assert_called_once()
+            _, kwargs = mock_client.chat.completions.create.call_args
+            self.assertEqual(kwargs["max_completion_tokens"], 64)
+            self.assertEqual(kwargs["temperature"], 0.0)
+
+        # Graceful fallback on exception / rate limit
+        mock_client.chat.completions.create.side_effect = Exception("Groq 429 Rate Limit Exceeded")
+        with patch("services.get_provider_client", return_value=(mock_client, "groq", "openai/gpt-oss-20b")):
+            fallback_res = await condense_query_with_history("Only 2 projects ??", history)
+            self.assertEqual(fallback_res, "Only 2 projects ??")
+
+    def test_enterprise_rag_smart_document_routing_and_affinity(self):
+        """Verify alias detection and conversational document affinity prevent cross-document bleed."""
+        from services import match_target_document
+        filenames = ["Vittal_JG_Resume.pdf", "09_project_management_playbook.pdf"]
+
+        # Exact match
+        self.assertEqual(match_target_document("Check Vittal_JG_Resume.pdf", filenames), "Vittal_JG_Resume.pdf")
+
+        # Stem match (without .pdf)
+        self.assertEqual(match_target_document("Look at vittal_jg_resume please", filenames), "Vittal_JG_Resume.pdf")
+
+        # Document category alias: "resume" / "cv"
+        self.assertEqual(match_target_document("What is in my resume?", filenames), "Vittal_JG_Resume.pdf")
+        self.assertEqual(match_target_document("Review my cv", filenames), "Vittal_JG_Resume.pdf")
+        self.assertEqual(match_target_document("Show me the playbook", filenames), "09_project_management_playbook.pdf")
+
+        # Conversational affinity: ambiguous follow-up inherits active document from history
+        history = [
+            {"role": "user", "content": "What projects are on my resume?"},
+            {"role": "assistant", "content": "Found in Vittal_JG_Resume.pdf: CYPHR and EazyShop."}
+        ]
+        # Follow-up query "Only 2 projects ??" without document name retains Vittal_JG_Resume.pdf
+        matched = match_target_document("Only 2 projects ??", filenames, chat_history=history)
+        self.assertEqual(matched, "Vittal_JG_Resume.pdf")
+
+        # Follow-up query "What about KRYPTON?" retains Vittal_JG_Resume.pdf (never bleeds into playbook!)
+        matched_krypton = match_target_document("What about KRYPTON?", filenames, chat_history=history)
+        self.assertEqual(matched_krypton, "Vittal_JG_Resume.pdf")
+
+    @patch("services.extract_text_from_pdf")
+    @patch("services.collection.insert_many", new_callable=AsyncMock)
+    @patch("services.get_embedding_provider")
+    async def test_enterprise_rag_contextual_section_propagation(self, mock_get_provider, mock_insert, mock_extract):
+        """Verify section headers propagate across page boundaries so Page 2 inherits Section: PROJECTS."""
+        from services import process_and_store_document, detect_section_header
+        mock_provider = MagicMock()
+        mock_provider.provider_id = "jina"
+        mock_provider.model_id = "jina-embeddings-v3"
+        mock_provider.dimensions = 768
+        mock_provider.embed_documents = AsyncMock(return_value=[[0.1] * 768, [0.2] * 768])
+        mock_get_provider.return_value = mock_provider
+
+        # Detect headers
+        self.assertEqual(detect_section_header("PROJECTS"), "PROJECTS")
+        self.assertEqual(detect_section_header("TECHNICAL SKILLS"), "TECHNICAL SKILLS")
+        self.assertEqual(detect_section_header("WORK EXPERIENCE"), "WORK EXPERIENCE")
+
+        # Mock extraction of 2 pages
+        mock_extract.return_value = [
+            {"page": 1, "text": "PROJECTS\nCYPHR: Enterprise RAG system.\nEazyShop: E-commerce platform."},
+            {"page": 2, "text": "AI House Price Estimator: Machine learning pipeline.\nKRYPTON: Security audit tool."}
+        ]
+        await process_and_store_document("resume.pdf", b"%PDF-1.4 dummy", "user@test.com")
+
+        mock_insert.assert_called_once()
+        inserted_docs = mock_insert.call_args[0][0]
+        self.assertGreaterEqual(len(inserted_docs), 2)
+
+        # Page 1 chunk has section PROJECTS
+        page_1_docs = [d for d in inserted_docs if d["page"] == 1]
+        self.assertTrue(all(d.get("section") == "PROJECTS" for d in page_1_docs))
+        self.assertIn("[Section: PROJECTS]", page_1_docs[0]["text"])
+
+        # Page 2 chunk MUST inherit Section: PROJECTS from Page 1
+        page_2_docs = [d for d in inserted_docs if d["page"] == 2]
+        self.assertTrue(all(d.get("section") == "PROJECTS" for d in page_2_docs))
+        self.assertIn("[Section: PROJECTS]", page_2_docs[0]["text"])
+
+    @patch("services.collection")
+    @patch("embeddings.JinaEmbeddingProvider.embed_query", new_callable=AsyncMock)
+    @patch("services.get_provider_client")
+    async def test_enterprise_rag_adaptive_top_k_retrieval(self, mock_provider, mock_embed, mock_coll):
+        """Verify aggregation queries expand retrieval depth to limit 12 while standard queries use 6."""
+        from services import generate_chat_response
+        mock_embed.return_value = [0.1] * 768
+        mock_coll.distinct = AsyncMock(return_value=["doc1.pdf", "doc2.pdf"])
+        mock_cursor = AsyncMock()
+        mock_cursor.to_list = AsyncMock(return_value=[])
+        mock_coll.aggregate.return_value = mock_cursor
+
+        mock_llm_response = MagicMock()
+        mock_llm_response.choices = [MagicMock(message=MagicMock(content="Here are the results."))]
+        mock_client = MagicMock()
+        mock_client.chat.completions.create = AsyncMock(return_value=mock_llm_response)
+        mock_provider.return_value = (mock_client, 'gemini', 'gemini-2.5-flash')
+
+        # Aggregation query ("all of them") -> limit 12, numCandidates 60
+        await generate_chat_response("List my projects, all of them", "user@test.com")
+        pipeline_agg = mock_coll.aggregate.call_args[0][0]
+        vsearch_agg = pipeline_agg[0]["$vectorSearch"]
+        self.assertEqual(vsearch_agg["limit"], 12)
+        self.assertEqual(vsearch_agg["numCandidates"], 60)
+
+        # Standard inquiry query -> limit 6, numCandidates 50
+        await generate_chat_response("What is the candidate's phone number?", "user@test.com")
+        pipeline_std = mock_coll.aggregate.call_args[0][0]
+        vsearch_std = pipeline_std[0]["$vectorSearch"]
+        self.assertEqual(vsearch_std["limit"], 6)
+        self.assertEqual(vsearch_std["numCandidates"], 50)
+
+    @patch("embeddings.JinaEmbeddingProvider._post_with_retry", new_callable=AsyncMock)
+    async def test_enterprise_rag_jina_v3_lora_task_adapters(self, mock_post):
+        """Verify Jina v3 asymmetric task adapters are sent in query and document embedding payloads."""
+        from embeddings import JinaEmbeddingProvider
+        mock_post.return_value = {"data": [{"index": 0, "embedding": [0.1] * 768}]}
+
+        with patch.dict(os.environ, {"JINA_API_KEY": "fake-jina-key"}):
+            provider = JinaEmbeddingProvider()
+
+            # embed_query sends task="retrieval.query"
+            await provider.embed_query("Find software projects")
+            self.assertEqual(mock_post.call_count, 1)
+            query_payload = mock_post.call_args[0][0]
+            self.assertEqual(query_payload.get("task"), "retrieval.query")
+
+            # embed_documents sends task="retrieval.passage"
+            mock_post.reset_mock()
+            mock_post.return_value = {
+                "data": [
+                    {"index": 0, "embedding": [0.1] * 768},
+                    {"index": 1, "embedding": [0.2] * 768}
+                ]
+            }
+            await provider.embed_documents(["Chunk 1 text", "Chunk 2 text"])
+            self.assertEqual(mock_post.call_count, 1)
+            doc_payload = mock_post.call_args[0][0]
+            self.assertEqual(doc_payload.get("task"), "retrieval.passage")
+            await provider.close()
+
 
 if __name__ == '__main__':
 
     unittest.main(testRunner=unittest.TextTestRunner(
         resultclass=EmojiTestResult, verbosity=2))
+

@@ -984,7 +984,10 @@ async def chat(request: Request, body_req: ChatRequest, current_user: dict = Dep
                 generated_title = new_title
 
         # Generate response
-        answer = await generate_chat_response(request.message, current_user["email"], provider_id=request.provider, model_id=request.model)
+        chat_kwargs = {"provider_id": request.provider, "model_id": request.model}
+        if not is_new_chat and chat_exists and chat_exists.get("messages"):
+            chat_kwargs["chat_history"] = chat_exists.get("messages", [])
+        answer = await generate_chat_response(request.message, current_user["email"], **chat_kwargs)
 
         # Update chat thread
         user_msg = {"role": "user", "content": request.message, "timestamp": datetime.now(timezone.utc)}

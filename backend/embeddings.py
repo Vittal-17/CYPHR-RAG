@@ -312,6 +312,7 @@ class JinaEmbeddingProvider(EmbeddingProvider):
         payload = {
             "model": self.model_id,
             "dimensions": EMBEDDING_DIMENSIONS,
+            "task": "retrieval.query",
             "input": text
         }
 
@@ -362,6 +363,7 @@ class JinaEmbeddingProvider(EmbeddingProvider):
             payload = {
                 "model": self.model_id,
                 "dimensions": EMBEDDING_DIMENSIONS,
+                "task": "retrieval.passage",
                 "input": batch
             }
 
