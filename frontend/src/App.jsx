@@ -13,7 +13,7 @@ import useProviders from './hooks/useProviders';
 import { groupChatsByRecency, pluralize } from './lib/format';
 import { errorDetail } from './lib/errors';
 import { withAuthDelay } from './utils/authDelay';
-import { getAccessToken, setAccessToken, clearAccessToken } from './utils/token';
+import { setAccessToken, clearAccessToken } from './utils/token';
 
 /** The persistent rail needs real room; below this the nav becomes a drawer. */
 const DESKTOP_QUERY = '(min-width: 1024px)';

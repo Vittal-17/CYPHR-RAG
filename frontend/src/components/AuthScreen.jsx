@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useId, useRef, useState } from 'react';
 import axios from 'axios';
 import toast from 'react-hot-toast';
-import { useTheme } from '../hooks/useTheme';
 import {
   AlertTriangle,
   Eye,
@@ -56,7 +55,6 @@ const CAPABILITIES = [
  * register-time confirmation, which exists purely to catch typing mistakes.
  */
 const AuthScreen = ({ onAuthSuccess }) => {
-  const currentTheme = useTheme();
   const [isLogin, setIsLogin] = useState(true);
   const [form, setForm] = useState(EMPTY_FORM);
   const [showPassword, setShowPassword] = useState(false);

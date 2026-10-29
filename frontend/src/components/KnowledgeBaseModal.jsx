@@ -49,7 +49,7 @@ const KnowledgeBaseModal = ({ isOpen, onClose, documents, onUploaded, onRemoved 
     return () => clearTimeout(confirmTimerRef.current);
   }, [pendingDelete]);
 
-  const list = Array.isArray(documents) ? documents : [];
+  const list = useMemo(() => (Array.isArray(documents) ? documents : []), [documents]);
   const term = query.trim().toLowerCase();
   const visible = useMemo(
     () => (term ? list.filter((doc) => doc?.filename?.toLowerCase().includes(term)) : list),

@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Sun, Moon, Monitor } from 'lucide-react';
 import clsx from 'clsx';
 
-const ThemeSelector = ({ compact }) => {
+const ThemeSelector = ({ compact: _compact }) => {
   const [theme, setTheme] = useState('light');
   const [isOpen, setIsOpen] = useState(false);
 
