@@ -186,6 +186,7 @@ const ProviderSelector = ({
           id={menuId}
           role="menu"
           aria-label="Model selection"
+          tabIndex={-1}
           onKeyDown={handleMenuKeyDown}
           className="panel absolute right-0 top-full z-chrome mt-2 w-64 origin-top-right animate-scale-in p-1.5"
         >

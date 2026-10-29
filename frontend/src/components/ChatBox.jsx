@@ -133,7 +133,11 @@ const ChatBox = ({
       try {
         const res = await axios.get(`/api/chats/${activeChatId}`, { signal: controller.signal });
         if (controller.signal.aborted || !mountedRef.current) return;
-        setMessages(Array.isArray(res.data?.messages) ? res.data.messages : []);
+        const raw = Array.isArray(res.data?.messages) ? res.data.messages : [];
+        setMessages(raw.map((m, i) => ({
+          ...m,
+          id: m.id || `${activeChatId}-${i}-${m.role}`,
+        })));
         setHistoryStatus('idle');
       } catch {
         if (controller.signal.aborted || !mountedRef.current) return;
@@ -153,7 +157,14 @@ const ChatBox = ({
     const entry = { chatId: chatIdAtSend, valid: true };
     inFlightRef.current = entry;
 
-    setMessages((prev) => [...prev, { role: 'user', content: question }]);
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: `user-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        role: 'user',
+        content: question,
+      },
+    ]);
     setInput('');
     setIsLoading(true);
     scrollModeRef.current = reduceMotion ? 'jump' : 'smooth';
@@ -180,7 +191,14 @@ const ChatBox = ({
       }
 
       if (!entry.valid || !mountedRef.current) return;
-      setMessages((prev) => [...prev, { role: 'assistant', content: res.data?.response ?? '' }]);
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `asst-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+          role: 'assistant',
+          content: res.data?.response ?? '',
+        },
+      ]);
     } catch (error) {
       if (!entry.valid || !mountedRef.current) return;
       const detail = errorDetail(error, '');
@@ -188,6 +206,7 @@ const ChatBox = ({
       setMessages((prev) => [
         ...prev,
         {
+          id: `err-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
           role: 'assistant',
           error: true,
           content: detail || 'This request did not complete. Please try asking again.',
@@ -294,7 +313,7 @@ const ChatBox = ({
 
             {messages.map((message, index) => (
               <ChatMessage
-                key={`${index}-${message.role}`}
+                key={message.id || `${message.role}-${message.content?.slice(0, 16)}`}
                 index={index}
                 role={message.role}
                 content={message.content}

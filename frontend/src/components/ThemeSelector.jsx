@@ -43,7 +43,13 @@ const ThemeSelector = ({ compact: _compact }) => {
 
       {isOpen && (
         <>
-          <div className="fixed inset-0 z-chrome" onClick={() => setIsOpen(false)} />
+          <button
+            type="button"
+            aria-label="Close theme menu"
+            tabIndex={-1}
+            onClick={() => setIsOpen(false)}
+            className="fixed inset-0 z-chrome cursor-default bg-transparent border-0"
+          />
           <div className="absolute right-0 top-full mt-1.5 w-36 overflow-hidden rounded-lg border border-line bg-surface-2 shadow-panel z-overlay animate-scale-in origin-top-right">
             <div className="flex flex-col py-1">
               {themes.map((t) => (

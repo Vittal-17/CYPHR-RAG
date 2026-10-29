@@ -44,7 +44,7 @@ axios.interceptors.request.use(async (config) => {
   if (isFirstParty) {
     const token = getAccessToken();
     if (token) {
-      config.headers['Authorization'] = `Bearer ${token}`;
+      config.headers.Authorization = `Bearer ${token}`;
     }
   }
 

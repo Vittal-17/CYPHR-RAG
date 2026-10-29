@@ -101,13 +101,16 @@ export function Modal({
     [onClose]
   );
 
+  useEffect(() => {
+    if (!isOpen) return undefined;
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isOpen, handleKeyDown]);
+
   if (!mounted) return null;
 
   return createPortal(
-    <div
-      className="fixed inset-0 z-modal flex justify-center overflow-y-auto overscroll-contain sm:items-center sm:p-6"
-      onKeyDown={handleKeyDown}
-    >
+    <div className="fixed inset-0 z-modal flex justify-center overflow-y-auto overscroll-contain sm:items-center sm:p-6">
       <button
         type="button"
         aria-label="Close dialog"

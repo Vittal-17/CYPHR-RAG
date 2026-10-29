@@ -102,6 +102,14 @@ const Sidebar = ({
     [drawerOpen]
   );
 
+  useEffect(() => {
+    if (!isDrawer || !drawerOpen) return undefined;
+    const node = asideRef.current;
+    if (!node) return undefined;
+    node.addEventListener('keydown', handleDrawerKeyDown);
+    return () => node.removeEventListener('keydown', handleDrawerKeyDown);
+  }, [isDrawer, drawerOpen, handleDrawerKeyDown]);
+
   // Collapsing to the rail or closing the drawer must never leave a row stuck
   // mid-rename or mid-confirmation.
   useEffect(() => {
@@ -309,7 +317,6 @@ const Sidebar = ({
         ref={asideRef}
         className={shell}
         aria-label="Workspace navigation"
-        onKeyDown={isDrawer ? handleDrawerKeyDown : undefined}
       >
 
         {/* Identity */}
