@@ -41,6 +41,7 @@ MANIFEST
 .tox/
 .nox/
 .coverage
+coverage/
 htmlcov/
 .mypy_cache/
 .ruff_cache/
