@@ -12,11 +12,26 @@ axios.defaults.baseURL = API_BASE_URL;
 let csrfToken = null;
 let csrfPromise = null;
 
-const fetchCsrfToken = () => {
+try {
+  csrfToken = sessionStorage.getItem('cyphr_csrf_token') || null;
+} catch {
+  // Ignore sessionStorage access errors in restricted contexts
+}
+
+const fetchCsrfToken = (force = false) => {
+  if (force) {
+    csrfPromise = null;
+    csrfToken = null;
+  }
   if (!csrfPromise) {
     csrfPromise = axios.get('/api/csrf').then(response => {
       if (response.data && response.data.csrf_token) {
         csrfToken = response.data.csrf_token;
+        try {
+          sessionStorage.setItem('cyphr_csrf_token', csrfToken);
+        } catch {
+          // Ignore
+        }
       }
       return csrfToken;
     }).catch(() => {
@@ -67,7 +82,30 @@ axios.interceptors.request.use(async (config) => {
 
 axios.interceptors.response.use(
   (response) => response,
-  (error) => {
+  async (error) => {
+    // Auto-retry once on 403 CSRF validation failure (e.g. token expired after 24h)
+    if (
+      error.response &&
+      error.response.status === 403 &&
+      typeof error.response.data?.detail === 'string' &&
+      error.response.data.detail.includes('CSRF validation failed') &&
+      error.config &&
+      !error.config._csrfRetry &&
+      isFirstPartyApiRequest(error.config.url)
+    ) {
+      error.config._csrfRetry = true;
+      try {
+        sessionStorage.removeItem('cyphr_csrf_token');
+      } catch {
+        // Ignore
+      }
+      const freshToken = await fetchCsrfToken(true);
+      if (freshToken) {
+        error.config.headers['X-CSRF-Token'] = freshToken;
+        return axios(error.config);
+      }
+    }
+
     if (error.response && error.response.status === 429) {
       const headers = error.response.headers;
       let retryAfter;

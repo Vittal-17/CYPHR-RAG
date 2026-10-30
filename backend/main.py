@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from database import check_db_connection, users_collection, chats_collection, collection
 from llm_providers import get_public_provider_catalog
 from services import process_and_store_document, generate_chat_response, generate_auto_title
-from auth import get_password_hash, verify_password, create_access_token, decode_access_token
+from auth import get_password_hash, verify_password, create_access_token, decode_access_token, SECRET_KEY
 import uvicorn
 import uuid
 import re
@@ -14,6 +14,9 @@ from datetime import datetime, timezone
 import os
 import httpx
 import secrets
+import time
+import hashlib
+import inspect
 from fastapi.responses import RedirectResponse
 from urllib.parse import urlencode
 import logging
@@ -276,6 +279,45 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 import secrets
 import hmac
+import hashlib
+import time
+import inspect
+
+_SUPPORTS_PARTITIONED_COOKIES = "partitioned" in inspect.signature(Response.set_cookie).parameters
+
+def create_csrf_token() -> str:
+    """
+    Generates a cryptographically signed, timestamped stateless CSRF token:
+    format: <entropy>.<timestamp>.<signature>
+    Signed with SECRET_KEY using HMAC-SHA256.
+    """
+    entropy = secrets.token_hex(16)
+    timestamp = int(time.time())
+    payload = f"{entropy}.{timestamp}"
+    signature = hmac.new(SECRET_KEY.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
+    return f"{payload}.{signature}"
+
+def verify_csrf_token(token: str, max_age_seconds: int = 86400) -> bool:
+    """
+    Validates the cryptographic HMAC signature and freshness of a CSRF token.
+    Allows up to max_age_seconds (default 24h) and 300s clock skew.
+    """
+    if not token or not isinstance(token, str):
+        return False
+    parts = token.split(".")
+    if len(parts) != 3:
+        return False
+    entropy, ts_str, signature = parts
+    try:
+        timestamp = int(ts_str)
+    except ValueError:
+        return False
+    now = int(time.time())
+    if (now - timestamp) > max_age_seconds or timestamp > (now + 300):
+        return False
+    payload = f"{entropy}.{timestamp}"
+    expected_sig = hmac.new(SECRET_KEY.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
+    return hmac.compare_digest(signature, expected_sig)
 
 class CSRFMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
@@ -286,7 +328,7 @@ class CSRFMiddleware(BaseHTTPMiddleware):
             origin = request.headers.get("origin")
             origin = origin.rstrip('/') if origin else origin
             if origin and not is_origin_allowed(origin):
-                logger.warning("CSRF validation failed: invalid origin")
+                logger.warning("CSRF validation failed: invalid origin %s", origin)
                 return JSONResponse(status_code=403, content={"detail": "CSRF validation failed."})
 
             csrf_cookie = request.cookies.get("csrf_token")
@@ -298,26 +340,33 @@ class CSRFMiddleware(BaseHTTPMiddleware):
             has_cookies = bool(request.cookies.get("access_token") or csrf_cookie)
 
             # If request relies on cookies (standard mode) or does not have a Bearer token:
-            # strictly enforce double-submit CSRF cookie + header check.
+            # strictly enforce CSRF verification.
             if has_cookies or not has_bearer:
-                if not csrf_cookie:
-                    logger.warning("CSRF validation failed: missing cookie")
-                    return JSONResponse(status_code=403, content={"detail": "CSRF validation failed."})
-                if not csrf_header:
-                    logger.warning("CSRF validation failed: missing header")
-                    return JSONResponse(status_code=403, content={"detail": "CSRF validation failed."})
-                if not hmac.compare_digest(csrf_cookie, csrf_header):
-                    logger.warning(
-                        "CSRF validation failed: token length mismatch (cookie=%d, header=%d)",
-                        len(csrf_cookie),
-                        len(csrf_header),
-                    )
-                    return JSONResponse(status_code=403, content={"detail": "CSRF validation failed."})
+                # Mode A: Browser sent a CSRF cookie (Standard Double-Submit Cookie pattern)
+                if csrf_cookie:
+                    if not csrf_header:
+                        logger.warning("CSRF validation failed: missing header")
+                        return JSONResponse(status_code=403, content={"detail": "CSRF validation failed."})
+                    if not hmac.compare_digest(csrf_cookie, csrf_header):
+                        logger.warning(
+                            "CSRF validation failed: token length mismatch (cookie=%d, header=%d)",
+                            len(csrf_cookie),
+                            len(csrf_header),
+                        )
+                        return JSONResponse(status_code=403, content={"detail": "CSRF validation failed."})
+                # Mode B: Browser blocked 3rd-party cookies (Helium, Mobile Chrome, Safari, Brave)
+                else:
+                    if not csrf_header:
+                        logger.warning("CSRF validation failed: missing both cookie and header")
+                        return JSONResponse(status_code=403, content={"detail": "CSRF validation failed."})
+                    if not verify_csrf_token(csrf_header):
+                        logger.warning("CSRF validation failed: invalid or expired cryptographic token in header")
+                        return JSONResponse(status_code=403, content={"detail": "CSRF validation failed."})
 
         csrf_token = request.cookies.get("csrf_token")
         is_new_token = False
         if not csrf_token:
-            csrf_token = secrets.token_hex(32)
+            csrf_token = create_csrf_token()
             is_new_token = True
 
         request.state.csrf_token = csrf_token
@@ -326,13 +375,16 @@ class CSRFMiddleware(BaseHTTPMiddleware):
         if is_new_token:
             samesite = get_cookie_samesite(request)
             secure_flag = IS_PRODUCTION or (samesite == "none")
-            response.set_cookie(
-                key="csrf_token",
-                value=csrf_token,
-                httponly=False,
-                samesite=samesite,
-                secure=secure_flag,
-            )
+            cookie_kwargs = {
+                "key": "csrf_token",
+                "value": csrf_token,
+                "httponly": False,
+                "samesite": samesite,
+                "secure": secure_flag,
+            }
+            if samesite == "none" and _SUPPORTS_PARTITIONED_COOKIES:
+                cookie_kwargs["partitioned"] = True
+            response.set_cookie(**cookie_kwargs)
 
         return response
 
@@ -442,14 +494,17 @@ async def register(request: Request, body_req: RegisterRequest, response: Respon
     from auth import ACCESS_TOKEN_EXPIRE_MINUTES
     samesite = get_cookie_samesite(request_obj)
     secure_flag = IS_PRODUCTION or (samesite == "none")
-    response.set_cookie(
-        key="access_token",
-        value=access_token,
-        httponly=True,
-        samesite=samesite,
-        secure=secure_flag,
-        max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60
-    )
+    cookie_kwargs = {
+        "key": "access_token",
+        "value": access_token,
+        "httponly": True,
+        "samesite": samesite,
+        "secure": secure_flag,
+        "max_age": ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+    }
+    if samesite == "none" and _SUPPORTS_PARTITIONED_COOKIES:
+        cookie_kwargs["partitioned"] = True
+    response.set_cookie(**cookie_kwargs)
     return {
         "message": "User registered successfully",
         "user": {"email": request.email, "fullname": request.fullname},
@@ -476,14 +531,17 @@ async def login(request: Request, body_req: LoginRequest, response: Response):
     from auth import ACCESS_TOKEN_EXPIRE_MINUTES
     samesite = get_cookie_samesite(request_obj)
     secure_flag = IS_PRODUCTION or (samesite == "none")
-    response.set_cookie(
-        key="access_token",
-        value=access_token,
-        httponly=True,
-        samesite=samesite,
-        secure=secure_flag,
-        max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60
-    )
+    cookie_kwargs = {
+        "key": "access_token",
+        "value": access_token,
+        "httponly": True,
+        "samesite": samesite,
+        "secure": secure_flag,
+        "max_age": ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+    }
+    if samesite == "none" and _SUPPORTS_PARTITIONED_COOKIES:
+        cookie_kwargs["partitioned"] = True
+    response.set_cookie(**cookie_kwargs)
     return {
         "message": "Login successful",
         "user": {"email": user["email"], "fullname": user["fullname"]},
@@ -639,14 +697,17 @@ async def google_callback(request: Request, response: Response, state: str, code
             samesite = "none"
 
         secure_flag = IS_PRODUCTION or (samesite == "none")
-        redirect_response.set_cookie(
-            key="access_token",
-            value=jwt_token,
-            httponly=True,
-            samesite=samesite,
-            secure=secure_flag,
-            max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60
-        )
+        cookie_kwargs = {
+            "key": "access_token",
+            "value": jwt_token,
+            "httponly": True,
+            "samesite": samesite,
+            "secure": secure_flag,
+            "max_age": ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        }
+        if samesite == "none" and _SUPPORTS_PARTITIONED_COOKIES:
+            cookie_kwargs["partitioned"] = True
+        redirect_response.set_cookie(**cookie_kwargs)
         return redirect_response
 
 
@@ -806,14 +867,17 @@ async def github_callback(request: Request, response: Response, code: str, state
             samesite = "none"
 
         secure_flag = IS_PRODUCTION or (samesite == "none")
-        redirect_response.set_cookie(
-            key="access_token",
-            value=jwt_token,
-            httponly=True,
-            samesite=samesite,
-            secure=secure_flag,
-            max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60
-        )
+        cookie_kwargs = {
+            "key": "access_token",
+            "value": jwt_token,
+            "httponly": True,
+            "samesite": samesite,
+            "secure": secure_flag,
+            "max_age": ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        }
+        if samesite == "none" and _SUPPORTS_PARTITIONED_COOKIES:
+            cookie_kwargs["partitioned"] = True
+        redirect_response.set_cookie(**cookie_kwargs)
         return redirect_response
 
 @app.post("/api/logout")

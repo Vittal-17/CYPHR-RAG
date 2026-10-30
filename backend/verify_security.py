@@ -3541,6 +3541,134 @@ class TestDynamicDualAuthAndMultiDomain(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("### 📚 Sources:", answer_meta)
         self.assertNotIn("Vittal_JG_Resume.pdf", answer_meta)
 
+    # =========================================================================
+    # Privacy Browser / Third-Party Cookie Blocked (Helium & Mobile Chrome) Tests
+    # =========================================================================
+
+    @patch('main.users_collection.find_one')
+    def test_csrf_cookie_blocked_valid_signed_header_allowed_on_login(self, mock_find):
+        """Verify that when privacy browsers block 3rd-party cookies, a valid signed CSRF header allows login."""
+        async def mock_none(*args, **kwargs): return None
+        mock_find.side_effect = mock_none
+
+        client.cookies.clear()
+        res_csrf = client.get('/api/csrf')
+        self.assertEqual(res_csrf.status_code, 200)
+        token = res_csrf.json()['csrf_token']
+
+        # Clear cookies to simulate Helium / Mobile Chrome blocking the Set-Cookie
+        client.cookies.clear()
+
+        response = client.post(
+            '/api/login',
+            json={"email": "nonexistent@test.com", "password": "wrongpassword"},
+            headers={'Origin': 'http://localhost:5173', 'X-CSRF-Token': token}
+        )
+        # Should pass CSRF middleware and reach login handler (returning 401 Unauthorized for bad creds, NOT 403)
+        self.assertEqual(response.status_code, 401)
+        self.assertIn("Invalid email or password", response.json().get("detail", ""))
+
+    @patch('main.users_collection.find_one')
+    @patch('main.users_collection.insert_one')
+    def test_csrf_cookie_blocked_valid_signed_header_allowed_on_register(self, mock_insert, mock_find):
+        """Verify that when privacy browsers block 3rd-party cookies, registration succeeds with signed CSRF header."""
+        async def mock_none(*args, **kwargs): return None
+        mock_find.side_effect = mock_none
+        mock_insert.side_effect = mock_none
+
+        client.cookies.clear()
+        res_csrf = client.get('/api/csrf')
+        token = res_csrf.json()['csrf_token']
+
+        # Clear cookies to simulate third-party cookie blocking
+        client.cookies.clear()
+
+        response = client.post(
+            '/api/register',
+            json={"fullname": "Helium User", "email": "helium@example.com", "password": "securepassword123"},
+            headers={'Origin': 'http://localhost:5173', 'X-CSRF-Token': token}
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("User registered successfully", response.json().get("message", ""))
+        self.assertIn("access_token", response.json())
+
+    def test_csrf_cookie_blocked_invalid_signed_header_rejected(self):
+        """Verify that an arbitrary untrusted token string without a cookie is rejected with 403."""
+        client.cookies.clear()
+        response = client.post(
+            '/api/login',
+            json={"email": "attacker@evil.com", "password": "password"},
+            headers={'Origin': 'http://localhost:5173', 'X-CSRF-Token': 'attacker-forged-token-value'}
+        )
+        self.assertEqual(response.status_code, 403)
+        self.assertIn("CSRF validation failed", response.json().get("detail", ""))
+
+    def test_csrf_cookie_blocked_tampered_signature_rejected(self):
+        """Verify that a token with a tampered HMAC signature without a cookie is rejected with 403."""
+        client.cookies.clear()
+        res_csrf = client.get('/api/csrf')
+        token = res_csrf.json()['csrf_token']
+        client.cookies.clear()
+
+        parts = token.split('.')
+        tampered_sig = ("0" if parts[2][-1] != "0" else "1") + parts[2][1:]
+        tampered_token = f"{parts[0]}.{parts[1]}.{tampered_sig}"
+
+        response = client.post(
+            '/api/login',
+            json={"email": "test@test.com", "password": "password"},
+            headers={'Origin': 'http://localhost:5173', 'X-CSRF-Token': tampered_token}
+        )
+        self.assertEqual(response.status_code, 403)
+        self.assertIn("CSRF validation failed", response.json().get("detail", ""))
+
+    def test_csrf_cookie_blocked_expired_signed_header_rejected(self):
+        """Verify that an expired signed CSRF token (> 24h) without a cookie is rejected with 403."""
+        from main import SECRET_KEY
+        import hmac
+        import hashlib
+        import time
+
+        old_timestamp = int(time.time()) - 90000  # 25 hours ago
+        payload = f"0123456789abcdef.{old_timestamp}"
+        sig = hmac.new(SECRET_KEY.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
+        expired_token = f"{payload}.{sig}"
+
+        client.cookies.clear()
+        response = client.post(
+            '/api/login',
+            json={"email": "test@test.com", "password": "password"},
+            headers={'Origin': 'http://localhost:5173', 'X-CSRF-Token': expired_token}
+        )
+        self.assertEqual(response.status_code, 403)
+        self.assertIn("CSRF validation failed", response.json().get("detail", ""))
+
+    def test_csrf_cookie_blocked_missing_header_rejected(self):
+        """Verify that a request without cookies AND without an X-CSRF-Token header is rejected with 403."""
+        client.cookies.clear()
+        response = client.post(
+            '/api/login',
+            json={"email": "test@test.com", "password": "password"},
+            headers={'Origin': 'http://localhost:5173'}
+        )
+        self.assertEqual(response.status_code, 403)
+        self.assertIn("CSRF validation failed", response.json().get("detail", ""))
+
+    def test_csrf_cookie_blocked_invalid_origin_rejected(self):
+        """Verify that even with a valid signed token, requests from disallowed origins are rejected with 403."""
+        client.cookies.clear()
+        res_csrf = client.get('/api/csrf')
+        token = res_csrf.json()['csrf_token']
+        client.cookies.clear()
+
+        response = client.post(
+            '/api/login',
+            json={"email": "test@test.com", "password": "password"},
+            headers={'Origin': 'http://evil-attacker.com', 'X-CSRF-Token': token}
+        )
+        self.assertEqual(response.status_code, 403)
+        self.assertIn("CSRF validation failed", response.json().get("detail", ""))
+
 
 if __name__ == '__main__':
 
