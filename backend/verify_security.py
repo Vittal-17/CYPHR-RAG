@@ -3669,6 +3669,46 @@ class TestDynamicDualAuthAndMultiDomain(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 403)
         self.assertIn("CSRF validation failed", response.json().get("detail", ""))
 
+    def test_set_secure_cookie_python_312_compatibility_no_value_error(self):
+        """Verify set_secure_cookie never raises ValueError under Python 3.12 (CI/Docker) and outputs Partitioned."""
+        from starlette.responses import Response
+        from main import set_secure_cookie
+
+        r = Response()
+        with patch('sys.version_info', (3, 12, 0)):
+            # Must not raise ValueError: Partitioned cookies are only supported in Python 3.14 and above
+            set_secure_cookie(r, key="csrf_token", value="test_val", samesite="none", secure=True)
+
+        set_cookie = r.headers.get("set-cookie", "")
+        self.assertIn("csrf_token=test_val", set_cookie)
+        self.assertIn("samesite=none", set_cookie.lower())
+        self.assertIn("secure", set_cookie.lower())
+        self.assertIn("partitioned", set_cookie.lower())
+
+    def test_set_secure_cookie_lax_no_partitioned(self):
+        """Verify set_secure_cookie does not append Partitioned when SameSite=lax."""
+        from starlette.responses import Response
+        from main import set_secure_cookie
+
+        r = Response()
+        set_secure_cookie(r, key="access_token", value="test_jwt", samesite="lax", secure=True)
+        set_cookie = r.headers.get("set-cookie", "")
+        self.assertIn("access_token=test_jwt", set_cookie)
+        self.assertIn("samesite=lax", set_cookie.lower())
+        self.assertNotIn("partitioned", set_cookie.lower())
+
+    def test_delete_secure_cookie_zeroes_age(self):
+        """Verify delete_secure_cookie properly expires cookies with matched SameSite and Secure flags."""
+        from starlette.responses import Response
+        from main import delete_secure_cookie
+
+        r = Response()
+        delete_secure_cookie(r, key="access_token", samesite="none", secure=True)
+        set_cookie = r.headers.get("set-cookie", "")
+        self.assertIn("max-age=0", set_cookie.lower())
+        self.assertIn("samesite=none", set_cookie.lower())
+        self.assertIn("secure", set_cookie.lower())
+
 
 if __name__ == '__main__':
 

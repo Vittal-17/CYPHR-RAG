@@ -281,9 +281,71 @@ import secrets
 import hmac
 import hashlib
 import time
-import inspect
+def set_secure_cookie(
+    response: Response,
+    *,
+    key: str,
+    value: str = "",
+    httponly: bool = False,
+    samesite: str = "lax",
+    secure: bool = True,
+    max_age: int | None = None,
+    expires: int | None = None,
+    path: str = "/",
+    domain: str | None = None,
+) -> None:
+    """
+    Sets a cookie with full cross-version compatibility across Python 3.10 - 3.14+.
+    When samesite == 'none', ensures 'Secure' is True and appends the CHIPS 'Partitioned'
+    attribute directly to the raw Set-Cookie header. This avoids Starlette's strict
+    Python 3.14 version gate (ValueError: Partitioned cookies are only supported in Python 3.14 and above)
+    while ensuring modern privacy browsers (Helium, Chrome, Safari) properly partition cross-site cookies.
+    """
+    cookie_kwargs = {
+        "key": key,
+        "value": value,
+        "httponly": httponly,
+        "samesite": samesite,
+        "secure": secure,
+        "path": path,
+    }
+    if max_age is not None:
+        cookie_kwargs["max_age"] = max_age
+    if expires is not None:
+        cookie_kwargs["expires"] = expires
+    if domain is not None:
+        cookie_kwargs["domain"] = domain
 
-_SUPPORTS_PARTITIONED_COOKIES = "partitioned" in inspect.signature(Response.set_cookie).parameters
+    response.set_cookie(**cookie_kwargs)
+    if samesite.lower() == "none" and secure:
+        key_prefix = (key + "=").encode("latin-1")
+        for i, (h_name, h_val) in enumerate(response.raw_headers):
+            if h_name.lower() == b"set-cookie" and h_val.startswith(key_prefix) and b"partitioned" not in h_val.lower():
+                response.raw_headers[i] = (h_name, h_val + b"; Partitioned")
+
+def delete_secure_cookie(
+    response: Response,
+    *,
+    key: str,
+    path: str = "/",
+    domain: str | None = None,
+    secure: bool = True,
+    httponly: bool = False,
+    samesite: str = "lax",
+) -> None:
+    """Deletes a cookie with matching path, domain, secure, and SameSite attributes."""
+    set_secure_cookie(
+        response,
+        key=key,
+        value="",
+        max_age=0,
+        expires=0,
+        path=path,
+        domain=domain,
+        secure=secure,
+        httponly=httponly,
+        samesite=samesite,
+    )
 
 def create_csrf_token() -> str:
     """
@@ -375,16 +437,14 @@ class CSRFMiddleware(BaseHTTPMiddleware):
         if is_new_token:
             samesite = get_cookie_samesite(request)
             secure_flag = IS_PRODUCTION or (samesite == "none")
-            cookie_kwargs = {
-                "key": "csrf_token",
-                "value": csrf_token,
-                "httponly": False,
-                "samesite": samesite,
-                "secure": secure_flag,
-            }
-            if samesite == "none" and _SUPPORTS_PARTITIONED_COOKIES:
-                cookie_kwargs["partitioned"] = True
-            response.set_cookie(**cookie_kwargs)
+            set_secure_cookie(
+                response,
+                key="csrf_token",
+                value=csrf_token,
+                httponly=False,
+                samesite=samesite,
+                secure=secure_flag,
+            )
 
         return response
 
@@ -494,17 +554,15 @@ async def register(request: Request, body_req: RegisterRequest, response: Respon
     from auth import ACCESS_TOKEN_EXPIRE_MINUTES
     samesite = get_cookie_samesite(request_obj)
     secure_flag = IS_PRODUCTION or (samesite == "none")
-    cookie_kwargs = {
-        "key": "access_token",
-        "value": access_token,
-        "httponly": True,
-        "samesite": samesite,
-        "secure": secure_flag,
-        "max_age": ACCESS_TOKEN_EXPIRE_MINUTES * 60,
-    }
-    if samesite == "none" and _SUPPORTS_PARTITIONED_COOKIES:
-        cookie_kwargs["partitioned"] = True
-    response.set_cookie(**cookie_kwargs)
+    set_secure_cookie(
+        response,
+        key="access_token",
+        value=access_token,
+        httponly=True,
+        samesite=samesite,
+        secure=secure_flag,
+        max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+    )
     return {
         "message": "User registered successfully",
         "user": {"email": request.email, "fullname": request.fullname},
@@ -531,17 +589,15 @@ async def login(request: Request, body_req: LoginRequest, response: Response):
     from auth import ACCESS_TOKEN_EXPIRE_MINUTES
     samesite = get_cookie_samesite(request_obj)
     secure_flag = IS_PRODUCTION or (samesite == "none")
-    cookie_kwargs = {
-        "key": "access_token",
-        "value": access_token,
-        "httponly": True,
-        "samesite": samesite,
-        "secure": secure_flag,
-        "max_age": ACCESS_TOKEN_EXPIRE_MINUTES * 60,
-    }
-    if samesite == "none" and _SUPPORTS_PARTITIONED_COOKIES:
-        cookie_kwargs["partitioned"] = True
-    response.set_cookie(**cookie_kwargs)
+    set_secure_cookie(
+        response,
+        key="access_token",
+        value=access_token,
+        httponly=True,
+        samesite=samesite,
+        secure=secure_flag,
+        max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+    )
     return {
         "message": "Login successful",
         "user": {"email": user["email"], "fullname": user["fullname"]},
@@ -569,29 +625,32 @@ async def google_login(request: Request, return_to: str = None, redirect_uri: st
 
     samesite = get_cookie_samesite(request)
     secure_flag = IS_PRODUCTION or (samesite == "none")
-    response.set_cookie(
+    set_secure_cookie(
+        response,
         key="google_oauth_state",
         value=state,
         httponly=True,
         samesite=samesite,
         secure=secure_flag,
-        max_age=300
+        max_age=300,
     )
-    response.set_cookie(
+    set_secure_cookie(
+        response,
         key="google_oauth_return_to",
         value=frontend_return_url,
         httponly=True,
         samesite=samesite,
         secure=secure_flag,
-        max_age=300
+        max_age=300,
     )
-    response.set_cookie(
+    set_secure_cookie(
+        response,
         key="google_oauth_redirect_uri",
         value=canonical_redirect_uri,
         httponly=True,
         samesite=samesite,
         secure=secure_flag,
-        max_age=300
+        max_age=300,
     )
 
     return response
@@ -697,17 +756,15 @@ async def google_callback(request: Request, response: Response, state: str, code
             samesite = "none"
 
         secure_flag = IS_PRODUCTION or (samesite == "none")
-        cookie_kwargs = {
-            "key": "access_token",
-            "value": jwt_token,
-            "httponly": True,
-            "samesite": samesite,
-            "secure": secure_flag,
-            "max_age": ACCESS_TOKEN_EXPIRE_MINUTES * 60,
-        }
-        if samesite == "none" and _SUPPORTS_PARTITIONED_COOKIES:
-            cookie_kwargs["partitioned"] = True
-        redirect_response.set_cookie(**cookie_kwargs)
+        set_secure_cookie(
+            redirect_response,
+            key="access_token",
+            value=jwt_token,
+            httponly=True,
+            samesite=samesite,
+            secure=secure_flag,
+            max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        )
         return redirect_response
 
 
@@ -729,29 +786,32 @@ async def github_login(request: Request, return_to: str = None, redirect_uri: st
 
     samesite = get_cookie_samesite(request)
     secure_flag = IS_PRODUCTION or (samesite == "none")
-    response.set_cookie(
+    set_secure_cookie(
+        response,
         key="github_oauth_state",
         value=state,
         httponly=True,
         samesite=samesite,
         secure=secure_flag,
-        max_age=300
+        max_age=300,
     )
-    response.set_cookie(
+    set_secure_cookie(
+        response,
         key="github_oauth_return_to",
         value=frontend_return_url,
         httponly=True,
         samesite=samesite,
         secure=secure_flag,
-        max_age=300
+        max_age=300,
     )
-    response.set_cookie(
+    set_secure_cookie(
+        response,
         key="github_oauth_redirect_uri",
         value=canonical_redirect_uri,
         httponly=True,
         samesite=samesite,
         secure=secure_flag,
-        max_age=300
+        max_age=300,
     )
 
     return response
@@ -867,17 +927,15 @@ async def github_callback(request: Request, response: Response, code: str, state
             samesite = "none"
 
         secure_flag = IS_PRODUCTION or (samesite == "none")
-        cookie_kwargs = {
-            "key": "access_token",
-            "value": jwt_token,
-            "httponly": True,
-            "samesite": samesite,
-            "secure": secure_flag,
-            "max_age": ACCESS_TOKEN_EXPIRE_MINUTES * 60,
-        }
-        if samesite == "none" and _SUPPORTS_PARTITIONED_COOKIES:
-            cookie_kwargs["partitioned"] = True
-        redirect_response.set_cookie(**cookie_kwargs)
+        set_secure_cookie(
+            redirect_response,
+            key="access_token",
+            value=jwt_token,
+            httponly=True,
+            samesite=samesite,
+            secure=secure_flag,
+            max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        )
         return redirect_response
 
 @app.post("/api/logout")
@@ -885,8 +943,12 @@ async def github_callback(request: Request, response: Response, code: str, state
 async def logout(request: Request, response: Response):
     samesite = get_cookie_samesite(request)
     secure_flag = IS_PRODUCTION or (samesite == "none")
-    response.delete_cookie(
-        "access_token", httponly=True, samesite=samesite, secure=secure_flag
+    delete_secure_cookie(
+        response,
+        key="access_token",
+        httponly=True,
+        samesite=samesite,
+        secure=secure_flag,
     )
     return {"message": "Logged out successfully"}
 
